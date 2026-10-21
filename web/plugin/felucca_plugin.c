@@ -154,8 +154,14 @@ static void tt_events(uint32_t f0)
     }
 }
 
-/* the transport from the next block (frame 0 of the render: step 0 of every track there) */
-EXPORT void tutti_start(void) { transport_req = 1; }
+/* the transport from the next block (frame 0 of the render: step 0 of every track there); stopped with the block nearest
+ * to frame `stop` (toBeat: the notes let go there, the tail only rings out; ~0u: never) */
+static uint32_t tt_stop = ~0u;
+EXPORT void tutti_start(uint32_t stop)
+{
+    transport_req = 1;
+    tt_stop = stop;
+}
 
 /* nblocks (<= TT_MAXB) blocks of CTL frames into tutti_out_l / _r; capture: the parts' sums too (tutti_cap). The
  * device's clock (fm1_ms, TIMER4) follows the frames; the audio ISR's block (audio.c audio_block) without the
@@ -173,6 +179,10 @@ EXPORT void tutti_render(uint32_t nblocks, uint32_t capture)
             web_ticks += 1000u * FM1_TICKS_PER_US;
         }
         tt_events(f0);
+        if (tt_stop != ~0u && f0 + CTL / 2u > tt_stop) {
+            transport_req = 2;                        /* (seq.c events_block: seq_stop, before the steps) */
+            tt_stop = ~0u;
+        }
         tt_blk = b;
         mix_block(tt_out, CTL);
         if (capture && b < TT_MAXB) {

@@ -76,7 +76,8 @@ Only builds that define `FELUCCA_TUTTI=1` (this plugin's) change; the hardware b
   linear ramps included); the FM-1 plays the range at the tempo in effect at `fromBeat`. A tempo change inside the
   range is refused (`unsupported`) unless the request says `approximation: "start-tempo"`; then the range is
   rendered at the start tempo throughout and is as long as that tempo makes it (the host warps it).
-- **Use A / use B.** `input: null`: the FM-1's own sequencer plays (use A). With `input` (use B) the sequencer stays
+- **Use A / use B.** `input: null`: the FM-1's own sequencer plays (use A), from beat 0, and stops at `toBeat` (the
+  nearest block): its notes are released there and the tail only rings out. With `input` (use B) the sequencer stays
   stopped and the notes, CC and pitch bend go in as USB-MIDI would deliver them: a channel plays the part the FM-1's
   MIDI IN setting gives it (by default channels 1..4 play T1..T4). Notes are released at `min(end, toBeat)`.
 

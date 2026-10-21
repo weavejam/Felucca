@@ -99,6 +99,7 @@ export function planRender(req, { tempoMap = "constant" } = {}) {
   if (frames <= 0) throw new RenderError("bad-request", "an empty range");
   if (frames > MAX_SECONDS * sr) throw new RenderError("too-large", `${frames} frames: at most ${MAX_SECONDS} s`);
   return { bpm, rate: sr, outputs: outputs.slice(), frames, skip: own(fromBeat), body,
+           stop: Math.round(((toBeat * 60) / bpm) * NATIVE_RATE),
            events: req.input ? midiEvents(req.input, bpm, toBeat) : null };
 }
 
@@ -165,7 +166,7 @@ export async function render(module, sectors, req, sink, opts = {}) {
   if (plan.events) {
     for (const e of plan.events)
       if (!main.tutti_event(e.frame, e.status, e.d1, e.d2)) throw new RenderError("too-large", "too many MIDI events");
-  } else main.tutti_start();
+  } else main.tutti_start(plan.stop);                 // use A: the song from frame 0, stopped at toBeat (the tail rings out)
 
   const B = main.tutti_block_frames(), MAXB = main.tutti_max_blocks();
   // what the outputs are made from, at 44.1 kHz: skip + frames frames (resampled: as far as the last one reads)

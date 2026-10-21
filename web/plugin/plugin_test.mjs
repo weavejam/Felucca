@@ -120,7 +120,7 @@ async function bars(bpm, nbars, hosted) {
   const ex = await device(mod, {}, 120);
   ex.tutti_tempo(hosted ? bpm : 0);
   if (!hosted) new Int16Array(ex.memory.buffer, ex.tutti_song_g(), 1)[0] = bpm;      // G_BPM, the firmware's own (integer)
-  ex.tutti_start();
+  ex.tutti_start(0xFFFFFFFF);                           // (never stopped)
   const got = [];
   let f0 = 0, last = -1;
   while (got.length < nbars) {
@@ -153,6 +153,17 @@ if (!FAST) {
   });
   console.log(`plugin:   (mix - (t1 + t2 + t3 + t4): ${db(sumErr[0])} / ${db(sumErr[1])} dB of the mix, L / R: the soft clip and the buses)`);
   check("stems add up to the mix within -20 dB (best effort: README)", sumErr.every((x) => x < 0.1));
+}
+
+// ---- use A: the sequencer stops at toBeat, the tail only rings out
+{
+  const drums = await makeState((ex) => { ex.web_test_heavy(); for (const t of [0, 1, 2]) ex.tutti_test_clear(t); });
+  const a = (await renderAll(drums, req({ toBeat: 4, tailMs: 2000 }))).out.mix[0];
+  const b = (await renderAll(drums, req({ toBeat: 12, tailMs: 0 }))).out.mix[0];
+  const s = Math.round(4 * 0.5 * 44100) + 22050, e = s + 44100;       // 0.5 .. 1.5 s after toBeat
+  const ta = peak(a.subarray(s, e)), tb = peak(b.subarray(s, e));
+  check(`use A: after toBeat no new steps, the tail rings out (${ta.toFixed(4)} vs playing on ${tb.toFixed(3)})`,
+        same(a.subarray(0, 88200 - 32), b.subarray(0, 88200 - 32)) && tb > 0.05 && ta < tb / 10);
 }
 
 // ---- use B: MIDI notes into T1, the sequencer stopped; their timing
