@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 weavejam
+ * Parts derived from Felucca (tutti_settings_flush and tutti_snapshot after project.c settings_poll and autosave_poll,
+ * tutti_restore after autosave_boot, tutti_render after audio.c audio_block, tutti_stem_render after fx.c master_out):
  * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
- * Copyright (C) 2026 weavejam (the tuttidaw plugin: this file)
  * FM-1 for tuttidaw (protocol tutti-plugin/0, web/plugin/README.md): the browser emulator (web/emu/felucca_web.c,
  * the whole firmware against a simulated FM-1) built with FELUCCA_TUTTI, plus what a host needs:
  *   - the host's tempo, fractional (core.h tutti_beat_q32: the step clocks keep to its grid over any length);
@@ -19,19 +21,28 @@
 #endif
 
 /* ------------------------------------------------------------ the tempo --- */
-/* bpm as the host has it (any positive tempo; the screen shows it rounded within 40 .. 240); 0: none, G_BPM again */
-EXPORT void tutti_tempo(double bpm)
+/* the host's tempo: the firmware's own range (params.c G_BPM, 40 .. 240), fractional. A runtime value only: the song's
+ * G_BPM (in the state and the autosave's signature) stays the FM-1's own, and while hosted its BPM knob and TAP change
+ * that, not the tempo; the screen shows the host's (core.h HEAD_BPM) */
+#define TUTTI_BPM_MIN 40.0
+#define TUTTI_BPM_MAX 240.0
+EXPORT double tutti_bpm_min(void) { return TUTTI_BPM_MIN; }
+EXPORT double tutti_bpm_max(void) { return TUTTI_BPM_MAX; }
+/* 1 = set; 0 = out of the range (nothing changed). 0 bpm: none, G_BPM again */
+EXPORT uint32_t tutti_tempo(double bpm)
 {
     double s;
-    int32_t b;
-    if (bpm == 0.0)
+    if (bpm == 0.0) {
         tutti_beat_q32 = 0;
-    if (!(bpm > 1.0 && bpm < 10000.0))
-        return;
+        tutti_bpm_shown = 0;
+        return 1;
+    }
+    if (!(bpm >= TUTTI_BPM_MIN && bpm <= TUTTI_BPM_MAX))
+        return 0;
     s = (double)FS * 60.0 / bpm;
     tutti_beat_q32 = (uint64_t)(s * 4294967296.0 + 0.5);
-    b = (int32_t)(bpm + 0.5);
-    song.g[G_BPM] = (int16_t)(b < 40 ? 40 : b > 240 ? 240 : b);
+    tutti_bpm_shown = (int16_t)(bpm + 0.5);
+    return 1;
 }
 
 /* ------------------------------------------------------------ the state --- */
@@ -255,22 +266,40 @@ EXPORT void tutti_stem_render(uint32_t nblocks, int32_t mg)
 /* ------------------------------------------------------- the live page --- */
 /* the transport for the page's preview of the host's (listen-only): stopped, or playing from `frames` after the
  * start: the sequencer started and run on that far without sound (events_block: its steps, automation, SONG sections,
- * as playing them would), then what it started let go (faded over a block), so the music goes on from there */
+ * as playing them would), then what it started let go (faded over a block), so the music goes on from there.
+ * tutti_seek only starts it; tutti_seek_run runs it a bounded number of blocks per call (the worklet: per render
+ * quantum, silent until it is done), so a seek minutes into a song never stalls the audio thread */
+static uint32_t tt_seek, tt_seeking;               /* blocks still to run; a seek is on */
 EXPORT void tutti_seek(uint32_t play, uint32_t frames)
 {
-    uint32_t i, k;
     seq_stop();
     transport_req = 0;
+    tt_seek = tt_seeking = 0;
     if (!play)
         return;
     song.rec = 0;
     seq_start();
-    for (; frames >= CTL; frames -= CTL)
+    tt_seek = frames / CTL;
+    tt_seeking = 1;
+}
+/* at most `max` blocks of the seek, `more` blocks added to it first (the time that went by meanwhile) -> the blocks still
+ * to run; 0: it is done (what it started let go now), or there is none */
+EXPORT uint32_t tutti_seek_run(uint32_t max, uint32_t more)
+{
+    uint32_t i, k;
+    if (!tt_seeking)
+        return 0;
+    tt_seek += more;
+    for (; tt_seek && max; tt_seek--, max--)
         events_block(CTL);
+    if (tt_seek)
+        return tt_seek;
+    tt_seeking = 0;
     for (i = 0; i < NTRK; i++)
         for (k = 0; k < NVOICE; k++)
             if (trk[i].v[k].active)
                 voice_kill(&trk[i].v[k]);
+    return 0;
 }
 
 /* for the tests (web/plugin/plugin_test.mjs): track t's pattern emptied (the heavy song, web_test_heavy, without it) */

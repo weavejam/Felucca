@@ -513,9 +513,10 @@ else
     run "browser emulator: the same song from the native build" "$OUT/emu_native" "$OUT/emu_native.f32"
     run "browser emulator: boot, keys, MIDI, screen, LEDs, PLAY, a save kept across instances, = native, cost" \
         node web/emu/emu_test.mjs build/emu/felucca.wasm "$OUT/emu_native.f32"
-    run "FM-1 plugin: the firmware with FELUCCA_TUTTI and its site (web/plugin/build.sh -> build/plugin-site)" sh web/plugin/build.sh
+    run "FM-1 plugin: the firmware with FELUCCA_TUTTI and its preview site (web/plugin/build.sh)" \
+        env PLUGIN_CHANNEL=preview PLUGIN_ALLOW_DIRTY=1 sh web/plugin/build.sh
     run "FM-1 plugin: renders, stems, fractional tempo, state, the tutti-plugin/0 protocol against a fake host" \
-        node web/plugin/plugin_test.mjs build/plugin-site/plugin/felucca.wasm build/emu/felucca.wasm
+        node web/plugin/plugin_test.mjs build/plugin-wasm/felucca.wasm build/emu/felucca.wasm
 fi
 
 [ $fail -eq 0 ] && echo "ALL HOST TESTS PASSED" || { echo "HOST TESTS FAILED"; exit 1; }

@@ -2,18 +2,22 @@
 // Copyright (C) 2026 weavejam
 // The FM-1 plugin (web/plugin) in Node: the renderer against the wasm, and the protocol against a fake host over a
 // MessageChannel (protocol-v0 11, the plugin's side).
-//   node web/plugin/plugin_test.mjs build/plugin-site/plugin/felucca.wasm [build/emu/felucca.wasm]
+//   node web/plugin/plugin_test.mjs build/plugin-wasm/felucca.wasm [build/emu/felucca.wasm]
 // With the emulator's wasm too: the plugin's build (FELUCCA_TUTTI) plays the emulator's heavy song bit for bit as it
 // (the per-part sums leave the mix as it was). FAST=1 skips the slow checks (64 bars, 48 kHz quality).
 import fs from "fs";
+import os from "os";
+import path from "path";
+import { spawnSync, execSync } from "child_process";
+import { fileURLToPath, pathToFileURL } from "url";
 import { storeSectors } from "../emu/worklet.js";
-import { render, planRender, device, frameAt, RenderError, NATIVE_RATE } from "./renderer.js";
+import { render, planRender, midiEvents, device, frameAt, RenderError, NATIVE_RATE, MIN_BPM, MAX_BPM } from "./renderer.js";
 import { packState, unpackState, stateEquals, STATE_VERSION } from "./state.js";
-import { PluginSession, embedderAllowed, PROTOCOL, INITIAL_CREDITS } from "./protocol.js";
+import { PluginSession, embedderAllowed, CHANNELS, PROTOCOL, INITIAL_CREDITS } from "./protocol.js";
 import { FM1Engine } from "./engine.js";
 import { Resampler } from "./resample.js";
 
-const wasmPath = process.argv[2] || "build/plugin-site/plugin/felucca.wasm", emuPath = process.argv[3];
+const wasmPath = process.argv[2] || "build/plugin-wasm/felucca.wasm", emuPath = process.argv[3];
 const mod = await WebAssembly.compile(fs.readFileSync(wasmPath));
 const FAST = process.env.FAST === "1";
 let fails = 0;
@@ -115,6 +119,32 @@ for (const [bpm, from, to, tail, sr] of [[120, 0, 8, 0, 44100], [123.45, 4, 13.5
   check(`a linear ramp 120 -> 60 over 4 beats: ${sec.toFixed(4)} s (the integral: ${ideal.toFixed(4)} s)`, Math.abs(sec - ideal) < 1 / 44100);
 }
 
+{ // 'start-tempo' (protocol 7): frame() is a constant map at the tempo at fromBeat, even with no change in the range
+  const ctx = { timeMap: tm(100, [{ beat: 3.3, bpm: 137.7, ramp: "step" }]), key: null };
+  const p = planRender(req({ context: ctx, fromBeat: 5, toBeat: 9.1, approximation: "start-tempo" }));
+  const own = (b) => Math.round(b * 60 / 137.7 * 44100);
+  check(`'start-tempo' lengths from the constant map at the start tempo: ${p.frames} = own(9.1) - own(5)`, p.frames === own(9.1) - own(5));
+}
+{ // the tempo range: the firmware's (40 .. 240 BPM), outside it 'unsupported', never a silently different tempo
+  const code = (bpm, more) => { try { planRender(req({ context: ctxOf(bpm, more) })); return "ok"; } catch (e) { return e.code; } };
+  const ex = await device(mod, {}, 120);
+  check(`tempo: ${MIN_BPM} and ${MAX_BPM} BPM render; 39.99, 240.01, 300 and 10 BPM: unsupported; the wasm's range the same`,
+        code(40) === "ok" && code(240) === "ok" && code(39.99) === "unsupported" && code(240.01) === "unsupported" &&
+        code(300) === "unsupported" && code(10) === "unsupported" && code(120, [{ beat: 16, bpm: 400, ramp: "step" }]) === "ok" &&
+        ex.tutti_bpm_min() === MIN_BPM && ex.tutti_bpm_max() === MAX_BPM && ex.tutti_tempo(300) === 0 && ex.tutti_tempo(39) === 0 &&
+        ex.tutti_tempo(123.45) === 1);
+}
+{ // progress (protocol 6, no seek): over the pre-roll from beat 0 and the range, monotonic, to 1
+  const seen = [];
+  let chunks = 0;
+  await render(mod, heavy, req({ fromBeat: 24, toBeat: 32 }), {
+    chunk: async () => { chunks++; }, progress: (f) => seen.push([f, chunks]), cancelled: () => false });
+  const before = Math.max(...seen.filter(([, c]) => c === 0).map(([f]) => f));
+  check(`progress over pre-roll + range: ${seen.length} steps, ${before.toFixed(3)} (pre-roll 0.75) before the first chunk, then to 1`,
+        seen.every(([f], i) => f >= 0 && f <= 1 && (!i || f >= seen[i - 1][0])) && before > 0.6 && before <= 0.75 &&
+        seen.at(-1)[0] === 1 && seen.filter(([, c]) => c === 0).length > 3);
+}
+
 // ---- fractional tempo: the step clock against the ideal grid
 async function bars(bpm, nbars, hosted) {
   const ex = await device(mod, {}, 120);
@@ -178,6 +208,75 @@ if (!FAST) {
   const late = (await renderAll({}, req({ input, fromBeat: 2.75, toBeat: 3, tailMs: 0 }))).out.mix[0];
   check("use B: a note held over fromBeat sounds from its first frame (rendered from the song's start)",
         same(held.subarray(held.length - late.length), late) && peak(late.subarray(0, 64)) > 1e-3);
+}
+{ // use B: the FM-1's own sequencer does not run when the request has input (protocol 7b), its song in the state or not
+  const none = { notes: [], cc: [], pitchBend: [], preRollBeats: 0 };
+  const a = (await renderAll(heavy, req({ input: null, outputs: ALL, toBeat: 8 }))).out;
+  const b = (await renderAll(heavy, req({ input: none, outputs: ALL, toBeat: 8, tailMs: 500 }))).out;
+  const one = { ...none, notes: [{ beat: 2, lengthBeats: 1, pitch: 64, velocity: 100, channel: 1 }] };
+  const c = (await renderAll(heavy, req({ input: one, outputs: ALL, toBeat: 8 }))).out;
+  const pk = (o) => Object.fromEntries(ALL.map((k) => [k, Math.max(peak(o[k][0]), peak(o[k][1]))]));
+  const pa = pk(a), pb = pk(b), pc = pk(c), at = Math.round(2 * 0.5 * 44100) - 17;
+  check(`use B: the state's song (use A peak ${pa.mix.toFixed(3)}) does not play: no notes -> every output silent`,
+        pa.mix > 0.05 && ALL.every((k) => pb[k] === 0));
+  check(`use B: one note on channel 1 -> T2 only (${pc.t2.toFixed(3)}), nothing before it`,
+        pc.t2 > 0.01 && pc.t1 === 0 && pc.t3 === 0 && pc.t4 === 0 && peak(c.mix[0].subarray(0, at)) === 0);
+}
+{ // zero-length notes (protocol 7b): the off after the on, never before; a note that rounds to no frames too
+  const n = (beat, lengthBeats, pitch = 60) => ({ beat, lengthBeats, pitch, velocity: 100, channel: 0 });
+  const ev = midiEvents({ notes: [n(0, 1), n(1, 0), n(2, 1e-9), n(3, -0)], cc: [], pitchBend: [], preRollBeats: 0 }, 120, 8);
+  const at = (beat) => Math.round(beat * 0.5 * 44100);
+  const kinds = ev.map((e) => `${e.status >> 4 === 9 ? "on" : "off"}@${e.frame}`);
+  const want = [`on@0`, `off@${at(1)}`, `on@${at(1)}`, `off@${at(1) + 32}`, `on@${at(2)}`, `off@${at(2) + 32}`, `on@${at(3)}`, `off@${at(3) + 32}`];
+  check(`zero-length notes: each off a block after its on (${kinds.slice(1, 4).join(" ")})`, kinds.join() === want.join());
+  const o = (await renderAll({}, req({ input: { notes: [n(1, 0)], cc: [], pitchBend: [], preRollBeats: 0 }, toBeat: 4, outputs: ["t1"] }))).out.t1[0];
+  const held = (await renderAll({}, req({ input: { notes: [n(1, 8)], cc: [], pitchBend: [], preRollBeats: 0 }, toBeat: 4, outputs: ["t1"] }))).out.t1[0];
+  const end = (x) => peak(x.subarray(x.length - 44100));
+  check(`zero-length notes: the note sounds (peak ${peak(o).toFixed(3)}) and is let go (the last second ${end(o).toFixed(4)}, held ${end(held).toFixed(4)})`,
+        peak(o) > 1e-3 && end(o) < end(held) / 4);
+}
+{ // the host's tempo is a runtime value: not the song's G_BPM, not in the autosave's signature (the state)
+  const { exports: ex } = await WebAssembly.instantiate(mod, {});
+  ex._initialize(); ex.web_nor_erase(); ex.tutti_boot(0);
+  for (let k = 0; k < 1000 * 44.1; k += 128) ex.web_render(128);
+  const g = () => new Int16Array(ex.memory.buffer, ex.tutti_song_g(), 1)[0];
+  const sig0 = ex.tutti_sig(), bpm0 = g();
+  ex.tutti_tempo(97.3);
+  for (let k = 0; k < 500 * 44.1; k += 128) ex.web_render(128);
+  ex.tutti_tempo(181.25);
+  for (let k = 0; k < 500 * 44.1; k += 128) ex.web_render(128);
+  check(`host tempo: G_BPM stays the song's (${bpm0} -> ${g()}), the state's signature unchanged`, g() === bpm0 && ex.tutti_sig() === sig0);
+}
+{ // the preview's seek: bounded work per call (the worklet's quantum), the time meanwhile added; where it gets to the
+  // same as one long seek
+  const live = async () => {
+    const { exports: ex } = await WebAssembly.instantiate(mod, {});
+    ex._initialize(); ex.web_nor_erase(); ex.tutti_boot(0);
+    for (let k = 0; k < 1000 * 44.1; k += 128) ex.web_render(128);
+    ex.web_test_heavy();
+    ex.tutti_tempo(123.45);
+    return ex;
+  };
+  const a = await live(), b = await live(), B = 1024, Q = 128 / 32, F = 44100 * 150;   // 2.5 minutes in (worklet SEEK_BLOCKS)
+  b.tutti_seek(1, F);
+  let left = b.tutti_seek_run(B, 0), calls = 1, bounded = left === Math.floor(F / 32) - B;
+  const t0 = performance.now();
+  while (left) {
+    const was = left;
+    left = b.tutti_seek_run(B, Q);
+    bounded &&= left === Math.max(0, was + Q - B);
+    calls++;
+  }
+  const ms = (performance.now() - t0) / (calls - 1);
+  a.tutti_seek(1, F + (calls - 1) * 128);
+  a.tutti_seek_run(0xFFFFFFFF, 0);
+  const pos = (ex) => [0, 1, 2, 3].map((t) => `${ex.tutti_seq_idx(t)}:${ex.tutti_seq_pos(t)}`).join(" ");
+  check(`seek: 2.5 min in, ${B} blocks a call (${calls} calls, ${ms.toFixed(3)} ms each, a quantum is 2.9 ms)`, bounded && ms < 1);
+  check(`seek: in steps (the quanta meanwhile added) = in one go (${pos(b)})`, pos(a) === pos(b) && a.tutti_seek_run(B, 0) === 0);
+  b.tutti_seek(1, 0);
+  const z = b.tutti_seek_run(B, 0);
+  b.tutti_seek(0, 0);
+  check("seek: to 0 done at once; stopped: nothing to run", z === 0 && b.tutti_seek_run(B, Q) === 0);
 }
 
 // ---- 48 kHz: the resampler against a sine
@@ -289,10 +388,15 @@ const collect = (h, renderId) => {                    // the chunks of a render,
   h.session.hello();
   check("hello: {type, protocol} to the parent, nothing else", h.hello.length === 1 && h.hello[0].type === "tutti-plugin:hello" &&
         h.hello[0].protocol === PROTOCOL && Object.keys(h.hello[0]).length === 2);
-  check("embedders: tuttidaw.com, its subdomains, localhost:*; not others",
-        ["https://tuttidaw.com", "https://www.tuttidaw.com", "https://pr-12.tuttidaw.com", "http://localhost:5173", "http://localhost"].every(embedderAllowed) &&
-        !["http://tuttidaw.com", "https://tuttidaw.com.evil.io", "https://eviltuttidaw.com", "https://a.b.tuttidaw.com", "https://localhost:3000",
-          "http://127.0.0.1:5173", "null", undefined].some(embedderAllowed));
+  const prod = (o) => embedderAllowed(o, CHANNELS.production), prev = (o) => embedderAllowed(o, CHANNELS.preview);
+  const never = ["https://pr-12.tuttidaw.com", "http://tuttidaw.com", "https://tuttidaw.com.evil.io", "https://eviltuttidaw.com",
+                 "https://a.b.tuttidaw.com", "https://www.tuttidaw.com:8443", "https://TUTTIDAW.com", "https://localhost:3000",
+                 "http://127.0.0.1:5173", "http://localhost.evil.io", "http://localhost:5173/", "null", "", undefined];
+  check("embedders, production: exactly https://tuttidaw.com and https://www.tuttidaw.com (the default)",
+        ["https://tuttidaw.com", "https://www.tuttidaw.com"].every(prod) && !["http://localhost:5173", "http://localhost", ...never].some(prod) &&
+        embedderAllowed("https://www.tuttidaw.com") && !embedderAllowed("http://localhost:5173"));
+  check("embedders, preview: those and http://localhost:<any port>; not others",
+        ["https://tuttidaw.com", "https://www.tuttidaw.com", "http://localhost:5173", "http://localhost"].every(prev) && !never.some(prev));
   check("connect from a wrong origin ignored", h.connect({ origin: "https://evil.example" }) === 0);
   check("connect from another window (not the parent) ignored", h.connect({ isParent: false }) === 0);
   check("connect from the parent at tuttidaw.com accepted", h.connect() === 1);
@@ -381,10 +485,138 @@ const collect = (h, renderId) => {                    // the chunks of a render,
   check(`render via the session: render:ok, each output ${want} frames, chunks <= 1 s, offsets in order`,
         a.ok.type === "render:ok" && ALL.every((o) => len(a.chunks, o) === want) && a.chunks.every((c) => c.channels[0].length <= 44100 && c.channels.length === 2) &&
         ALL.every((o) => a.chunks.filter((c) => c.output === o).every((c, i, cs) => c.frameOffset === (i ? cs[i - 1].frameOffset + cs[i - 1].channels[0].length : 0))));
+  check(`render:ok is {type, id, renderId, frames: ${want}, outputs, build} after the last chunk`,
+        Object.keys(a.ok).sort().join() === "build,frames,id,outputs,renderId,sessionId,type" && a.ok.frames === want &&
+        a.ok.outputs.join() === ALL.join() && a.ok.build === "t" && a.ok.renderId === "w1" &&
+        h.got.indexOf(a.ok) === -1);
   check("render via the session twice: the same bytes", a.chunks.length === b.chunks.length &&
         a.chunks.every((c, i) => c.output === b.chunks[i].output && same(c.channels[0], b.chunks[i].channels[0]) && same(c.channels[1], b.chunks[i].channels[1])));
   check("progress: render-progress messages, fraction 0..1", h.got.some((m) => m.type === "render-progress" && m.fraction >= 0 && m.fraction <= 1));
   h.close();
+}
+
+// ---- sessions apart: what a request of an ended session sends goes nowhere, not into the next session
+{
+  const ctl = { initDelay: 0, renders: [] };
+  const engine = {
+    init: async () => { await sleep(ctl.initDelay); return { stateRevision: 1 }; },
+    context() {}, transport() {}, close() {},
+    getState: async () => { await sleep(ctl.initDelay); return { state: new ArrayBuffer(4), stateVersion: 1, stateRevision: 1 }; },
+    render: (r, sink) => new Promise((res, rej) => ctl.renders.push({ r, sink, res, rej })),
+  };
+  const session = new PluginSession({ engine, post: () => {}, plugin: { id: "x", version: "t", build: "b1" } });
+  const conn = (sid) => {
+    const ch = new MessageChannel(), got = [];
+    ch.port1.onmessage = (e) => got.push(e.data);
+    const ok = session.onWindowMessage({ data: { type: "tutti-plugin:connect", protocol: PROTOCOL, sessionId: sid, generation: 1, host: {} },
+                                         origin: HOST, isParent: true, ports: [ch.port2] });
+    return { ok, got, send: (m) => ch.port1.postMessage({ sessionId: sid, ...m }), close: () => ch.port1.close() };
+  };
+  // a late init of session A: B stays uninited (its requests: bad-request), nothing of A's in B
+  ctl.initDelay = 200;
+  const a = conn("A");
+  a.send({ type: "init", id: "ia", sampleRate: 44100, context: ctxOf(120), state: null, stateVersion: null, mode: "render" });
+  await sleep(30);
+  a.send({ type: "close" });
+  await sleep(30);
+  ctl.initDelay = 0;
+  const b = conn("B");
+  await sleep(300);
+  b.send({ type: "get-state", id: "gb" });
+  await sleep(50);
+  const gb = b.got.find((m) => m.id === "gb");
+  check("a late init of an ended session: the new session not inited (bad-request), no init:ok anywhere",
+        b.ok === 1 && session.inited === false && session.state === "initializing" && gb && gb.code === "bad-request" &&
+        !a.got.concat(b.got).some((m) => m.type === "init:ok"));
+  b.send({ type: "init", id: "ib", sampleRate: 44100, context: ctxOf(120), state: null, stateVersion: null, mode: "render" });
+  await sleep(50);
+  // a render of session B left running when B ends; C's render meanwhile; B's results go nowhere
+  b.send({ type: "render", id: "rb", ...req({ renderId: "rb" }) });
+  await sleep(50);
+  ctl.initDelay = 150;
+  b.send({ type: "get-state", id: "gs" });
+  await sleep(20);
+  b.send({ type: "close" });
+  await sleep(30);
+  ctl.initDelay = 0;
+  const c = conn("C");
+  c.send({ type: "init", id: "ic", sampleRate: 44100, context: ctxOf(120), state: null, stateVersion: null, mode: "render" });
+  await sleep(50);
+  c.send({ type: "render", id: "rc", ...req({ renderId: "rc" }) });
+  await sleep(50);
+  const old = ctl.renders[0];
+  let cancelled = false;
+  try { await old.sink.chunk("mix", 0, [new Float32Array(4), new Float32Array(4)]); } catch (e) { cancelled = e.code === "cancelled"; }
+  old.sink.progress(0.5);
+  old.res({ frames: 4, outputs: ["mix"] });
+  await sleep(200);
+  const cur = ctl.renders[1];
+  await cur.sink.chunk("mix", 0, [new Float32Array(4), new Float32Array(4)]);
+  cur.res({ frames: 4, outputs: ["mix"] });
+  await sleep(50);
+  const ofB = c.got.filter((m) => m.renderId === "rb" || m.id === "rb" || m.id === "gs");
+  const okC = c.got.find((m) => m.id === "rc");
+  check("a render of an ended session: its sink cancelled, nothing of it (or its get-state) in the next session",
+        cancelled && ofB.length === 0 && c.got.every((m) => m.sessionId === "C") && !b.got.some((m) => m.id === "gs" || m.id === "rb"));
+  check("the next session's render runs alongside (not busy), its render:ok has its build",
+        ctl.renders.length === 2 && okC && okC.type === "render:ok" && okC.build === "b1" && okC.frames === 4 && session.render === null);
+  a.close(); b.close(); c.close();
+  session.close();
+  // after the page went standalone (4 s without a connect): connects refused
+  const s2 = new PluginSession({ engine, post: () => {}, plugin: { id: "x", version: "t", build: "b1" } });
+  s2.stopAccepting();
+  const ch = new MessageChannel();
+  check("a connect after going standalone: refused", s2.onWindowMessage({ data: { type: "tutti-plugin:connect", protocol: PROTOCOL,
+        sessionId: "late", generation: 1, host: {} }, origin: HOST, isParent: true, ports: [ch.port2] }) === 0 && s2.port === null);
+  ch.port1.close();
+}
+
+// ---- the site (site.mjs): per channel, the embedders in build-info.js and _headers alike, the manifest, the CSP
+{
+  const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const site = (channel, env = {}) => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), `fm1-site-${channel}-`));
+    const r = spawnSync(process.execPath, [path.join(ROOT, "web/plugin/site.mjs"), path.resolve(wasmPath), out, "1.0"],
+                        { cwd: ROOT, env: { ...process.env, PLUGIN_ALLOW_DIRTY: "", ...env, PLUGIN_CHANNEL: channel }, encoding: "utf8" });
+    return { out, ...r };
+  };
+  const dirty = execSync("git status --porcelain", { cwd: ROOT }).toString().trim() !== "";
+  const checkSite = async (channel, s) => {
+    const rd = (f) => fs.readFileSync(path.join(s.out, f), "utf8");
+    const headers = rd("_headers"), m = JSON.parse(rd("tutti-plugin.json"));
+    const info = await import(pathToFileURL(path.join(s.out, "plugin/build-info.js")).href);
+    const anc = [...headers.matchAll(/frame-ancestors ([^;\n]*)/g)].map((x) => x[1]);
+    const page = rd("plugin/index.html"), inline = /<script type="module">([\s\S]*?)<\/script>/.exec(page)[1];
+    const hash = (await import("crypto")).createHash("sha256").update(inline, "utf8").digest("base64");
+    const csp = /\/plugin\/\*\n  Content-Security-Policy: ([^\n]*)/.exec(headers)[1];
+    check(`site ${channel}: build-info EMBEDDERS and every frame-ancestors = ${CHANNELS[channel].join(" ")}`,
+          JSON.stringify(info.EMBEDDERS) === JSON.stringify(CHANNELS[channel]) && anc.length === 2 &&
+          anc.every((a) => a === CHANNELS[channel].join(" ")) && info.BUILD.channel === channel);
+    check(`site ${channel}: manifest seek false, midiChannels 0..3 = T1..T4, source the pinned commit`,
+          m.capabilities.seek === false && JSON.stringify(m.capabilities.midiChannels) === JSON.stringify([0, 1, 2, 3].map((c) => ({ channel: c, name: `T${c + 1}` }))) &&
+          /^https:\/\/github\.com\/weavejam\/Felucca\/tree\/[0-9a-f]{40}$/.test(m.source) && m.source === info.BUILD.source);
+    check(`site ${channel}: the plugin page's CSP (default-src 'none', the inline module's hash, wasm, worker, no frames, no forms)`,
+          csp.startsWith(`default-src 'none'; script-src 'self' 'sha256-${hash}' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; `) &&
+          ["style-src 'self' 'unsafe-inline'", "font-src 'self'", "img-src 'self' data:", "frame-src 'none'", "form-action 'none'"].every((d) => csp.includes(d)));
+    fs.rmSync(s.out, { recursive: true, force: true });
+  };
+  const pv = site("preview", { PLUGIN_ALLOW_DIRTY: "1" });
+  check(`site preview: built (${dirty ? "a dirty tree, allowed for a preview: marked" : "a clean tree"})`, pv.status === 0 &&
+        (!dirty || fs.readFileSync(path.join(pv.out, "tutti-plugin.json"), "utf8").includes(".dirty")));
+  await checkSite("preview", pv);
+  const pr = site("production");
+  if (dirty) {
+    const forced = site("production", { PLUGIN_ALLOW_DIRTY: "1" });
+    check("site production on a dirty tree: refused (also with PLUGIN_ALLOW_DIRTY=1)", pr.status === 1 && /changes not in/.test(pr.stderr) && forced.status === 1);
+    console.log("plugin:   (the production site's checks need a clean tree: commit, then run again)");
+    for (const x of [pr, forced]) fs.rmSync(x.out, { recursive: true, force: true });
+  } else {
+    check("site production: built", pr.status === 0);
+    await checkSite("production", pr);
+  }
+  const bad = site("staging", { PLUGIN_ALLOW_DIRTY: "1" });
+  check("site: an unknown PLUGIN_CHANNEL refused", bad.status === 1 && /PLUGIN_CHANNEL/.test(bad.stderr));
+  fs.rmSync(bad.out, { recursive: true, force: true });
 }
 
 // ---- edit mode: the live device, edits -> revisions, state-changed debounced, get-state, the round trip

@@ -21,6 +21,8 @@ export const OUTPUTS = [
   { id: "t4", name: "T4", channels: 2 },
 ];
 export const MAX_SECONDS = 600, MAX_TAIL_MS = 10000;
+export const MIN_BPM = 40, MAX_BPM = 240;
+export const BLOCK = 32;                               // the firmware's control block (felucca_plugin.c tutti_block_frames)              // the firmware's tempo range (felucca_plugin.c tutti_bpm_min/max)
 
 export class RenderError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -88,13 +90,16 @@ export function planRender(req, { tempoMap = "constant" } = {}) {
     throw new RenderError("bad-request", `outputs: a subset of ${OUTPUTS.map((o) => o.id).join(" ")}`);
   const pts = checkTimeMap(req.context && req.context.timeMap);
   const bpm = tempoAt(pts, fromBeat), changes = tempoChanges(pts, fromBeat, toBeat);
-  if (changes && tempoMap !== "full" && req.approximation !== "start-tempo")
+  const approx = req.approximation === "start-tempo";
+  if (changes && tempoMap !== "full" && !approx)
     throw new RenderError("unsupported", "the tempo changes inside the range: FM-1 renders a constant tempo (approximation 'start-tempo')");
+  if (!(bpm >= MIN_BPM && bpm <= MAX_BPM))
+    throw new RenderError("unsupported", `${bpm} BPM at fromBeat: FM-1 plays ${MIN_BPM} .. ${MAX_BPM} BPM`);
   const sr = sampleRate, tail = Math.ceil((tailMs * sr) / 1000);
-  // protocol 5: frame(beat) integrates the map from beat 0. With 'start-tempo' the range is rendered at the tempo at
-  // fromBeat throughout, its length that tempo's (the host warps it to the map)
+  // protocol 5: frame(beat) integrates the map from beat 0. With 'start-tempo' (protocol 7) frame() is a constant map at
+  // the tempo at fromBeat: the range rendered at that tempo throughout, its length that tempo's (the host warps it)
   const own = (b) => Math.round(((b * 60) / bpm) * sr);  // the plugin's timeline: constant bpm from beat 0
-  const body = changes ? own(toBeat) - own(fromBeat) : frameAt(pts, toBeat, sr) - frameAt(pts, fromBeat, sr);
+  const body = approx ? own(toBeat) - own(fromBeat) : frameAt(pts, toBeat, sr) - frameAt(pts, fromBeat, sr);
   const frames = body + tail;
   if (frames <= 0) throw new RenderError("bad-request", "an empty range");
   if (frames > MAX_SECONDS * sr) throw new RenderError("too-large", `${frames} frames: at most ${MAX_SECONDS} s`);
@@ -104,7 +109,9 @@ export function planRender(req, { tempoMap = "constant" } = {}) {
 }
 
 // use B: the notes (released at min(their end, toBeat)), CC and pitch bend, at 44.1 kHz frames of the plugin's
-// timeline, in time order; at one frame: controllers, then note-offs, then note-ons
+// timeline, in time order; at one frame: controllers, then note-offs, then note-ons. A note's off comes a block after
+// its on at least (protocol 7b: a note of length <= 0 still gets its off after its on; the firmware takes MIDI per
+// block, so an off in the on's block would let it go before it sounded)
 export function midiEvents(input, bpm, toBeat) {
   const f = (b) => Math.round(((Math.max(0, b) * 60) / bpm) * NATIVE_RATE);
   const ev = [], ch = (c) => Number.isInteger(c) && c >= 0 && c <= 15;
@@ -118,7 +125,7 @@ export function midiEvents(input, bpm, toBeat) {
         !int(n.velocity, 1, 127) || !ch(n.channel))
       throw new RenderError("bad-request", "input.notes: beat, lengthBeats >= 0, pitch 0..127, velocity 1..127, channel 0..15");
     if (n.beat >= toBeat) continue;
-    const on = f(n.beat), off = Math.max(on, f(Math.min(n.beat + n.lengthBeats, toBeat)));
+    const on = f(n.beat), off = Math.max(on + BLOCK, f(Math.min(n.beat + n.lengthBeats, toBeat)));
     ev.push({ frame: on, order: 2, status: 0x90 | n.channel, d1: n.pitch, d2: n.velocity });
     ev.push({ frame: off, order: 1, status: 0x80 | n.channel, d1: n.pitch, d2: 0 });
   }
@@ -147,7 +154,7 @@ export async function device(module, sectors, bpm) {
   ex.web_nor_erase();
   restoreSectors(new Uint8Array(ex.memory.buffer, ex.web_nor(), ex.web_nor_size()), sectors);
   ex.tutti_boot(1);
-  ex.tutti_tempo(bpm);
+  if (!ex.tutti_tempo(bpm)) throw new RenderError("unsupported", `${bpm} BPM`);
   return ex;
 }
 
@@ -167,8 +174,11 @@ export async function render(module, sectors, req, sink, opts = {}) {
     for (const e of plan.events)
       if (!main.tutti_event(e.frame, e.status, e.d1, e.d2)) throw new RenderError("too-large", "too many MIDI events");
   } else main.tutti_start(plan.stop);                 // use A: the song from frame 0, stopped at toBeat (the tail rings out)
+  // (use B: the FM-1's sequencer never starts, protocol 7b: only the host's MIDI plays; tutti_event takes no realtime
+  // messages, so the MIDI cannot start it either)
 
   const B = main.tutti_block_frames(), MAXB = main.tutti_max_blocks();
+  if (B !== BLOCK) throw new RenderError("internal", `blocks of ${B} frames`);
   // what the outputs are made from, at 44.1 kHz: skip + frames frames (resampled: as far as the last one reads)
   const resampled = rate !== NATIVE_RATE;
   const need = resampled ? Resampler.inputFor(skip + frames) : skip + frames;
@@ -231,11 +241,13 @@ export async function render(module, sectors, req, sink, opts = {}) {
         s.n -= at;
       }
     if (made >= need && done < frames && !at) throw new RenderError("internal", "the render ran out of input");
-    sink.progress(Math.min(1, done / frames));
+    // over the pre-roll and the range (no seek: every render runs from beat 0, protocol 6), out as the chunks go
+    sink.progress(Math.min(made / need, (skip + done) / (skip + frames)));
     if (Date.now() - lastYield > 40) {                 // let a cancel (or the page) in
       lastYield = Date.now();
       await new Promise((res) => setTimeout(res, 0));
     }
   }
-  return { frames, bpm: plan.bpm };
+  sink.progress(1);
+  return { frames, outputs };
 }

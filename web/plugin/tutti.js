@@ -7,11 +7,10 @@
 //     tuttidaw" sends `commit`; renders run in a Worker (render-worker.js); mode 'render': headless, nothing else runs.
 //   - opened by itself (or not connected within a few seconds): the emulator as on its own page, a note that it is a
 //     tuttidaw plugin.
-import { PluginSession } from "./protocol.js";
+import { PluginSession, embedderAllowed } from "./protocol.js";
 import { FM1Engine } from "./engine.js";
-import { RenderError, checkTimeMap, tempoAt } from "./renderer.js";
-import { STORE_AREAS } from "../emu/worklet.js";
-import { BUILD } from "./build-info.js";
+import { RenderError, checkTimeMap, tempoAt, MIN_BPM, MAX_BPM } from "./renderer.js";
+import { BUILD, EMBEDDERS } from "./build-info.js";
 
 const embedded = window.parent !== window;
 const AUTOSAVE = [0xE5000, 0xE7000];                   // project.c OBJ_AUTOSAVE's two sectors: the music, not the rest
@@ -54,7 +53,9 @@ function ui() {
   const credit = document.createElement("p");
   credit.innerHTML = `FM-1 plugin for <a href="https://tuttidaw.com">tuttidaw</a> by weavejam, built from Felucca
     (GPL-3.0) · <a href="../credits.html" target="_blank" rel="noopener">credits, licences, source</a><br>
+    <small>Source of this build: <span id="tt-source"></span></small><br>
     <small>Not affiliated with or endorsed by M-VAVE.</small>`;
+  credit.querySelector("#tt-source").textContent = BUILD.source;   // (as text too: tuttidaw's frame opens no popups)
   foot.insertBefore(credit, foot.firstChild);
   for (const a of foot.querySelectorAll("nav a")) if (!/^https?:/.test(a.getAttribute("href"))) a.remove();   // (the
   $("tt-commit").addEventListener("click", () => {                                                          // emulator site's)
@@ -70,6 +71,7 @@ const note = (t) => { if ($("tt-note")) $("tt-note").textContent = t; };
 
 function becomeStandalone() {
   standalone = true;
+  session.stopAccepting();                             // (a late connect would find the emulator on this browser's saves)
   delete host.sectors;                                 // (this browser's saves, as the emulator's own page)
   delete host.keep;
   host.midi = true;
@@ -90,7 +92,7 @@ const flashKey = (sectors) => {                        // the flash outside the 
 };
 const send = (m) => { if (node) node.port.postMessage(m); };
 function setTempo(beat) {
-  const b = tempoAt(pts, beat);
+  const b = Math.min(MAX_BPM, Math.max(MIN_BPM, tempoAt(pts, beat)));   // (the preview: within the FM-1's range)
   if (b !== bpm) { bpm = b; send({ type: "tutti-tempo", bpm }); }
 }
 
@@ -177,15 +179,23 @@ const live = {
 };
 
 // ------------------------------------------------------------------ renders in a Worker
-let worker = null;
+// one render at a time in it: one still running when another starts (its session ended meanwhile: it is let go, not
+// waited for) goes with its worker, and the new one gets a fresh worker
+let worker = null, workerBusy = null;
 function renderInWorker(sectors, req, sink) {
+  if (worker && workerBusy) {
+    worker.terminate();
+    workerBusy(new RenderError("cancelled", "the session ended"));
+    worker = null;
+  }
   worker = worker || new Worker(new URL("./render-worker.js", import.meta.url), { type: "module" });
   const w = worker;
   $("tt-render").hidden = false;
   $("tt-progress").value = 0;
   return new Promise((resolve, reject) => {
     const poll = setInterval(() => { if (sink.cancelled()) w.postMessage({ type: "cancel" }); }, 50);
-    const end = () => { clearInterval(poll); w.onmessage = null; $("tt-render").hidden = true; };
+    const end = () => { clearInterval(poll); w.onmessage = null; workerBusy = null; $("tt-render").hidden = true; };
+    workerBusy = (err) => { end(); reject(err); };
     w.onmessage = async (e) => {
       const m = e.data;
       if (m.type === "chunk") {
@@ -215,6 +225,7 @@ const engine = new FM1Engine({
 const session = new PluginSession({
   engine,
   post: (m) => window.parent.postMessage(m, "*"),
+  allow: (origin) => embedderAllowed(origin, EMBEDDERS),   // (the build's channel: site.mjs PLUGIN_CHANNEL)
   plugin: { id: BUILD.id, version: BUILD.version, build: BUILD.build },
   log,
 });

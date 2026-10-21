@@ -31,6 +31,10 @@
 #endif
 #if FELUCCA_TUTTI
 static uint64_t tutti_beat_q32;  /* a beat (a quarter) in samples, Q32, from the host; 0 = G_BPM as always */
+static int16_t tutti_bpm_shown;  /* the host's tempo rounded, for the screen (G_BPM stays the song's own) */
+#define HEAD_BPM (tutti_beat_q32 ? tutti_bpm_shown : song.g[G_BPM])   /* the tempo the screen shows */
+#else
+#define HEAD_BPM song.g[G_BPM]
 #endif
 #define C1_NP (FELUCCA_CPU2 ? NPART : 1)   /* the copies of the state a part's render writes that parts shared before the
                                             * second core (mod.c, voice.c SPREAD, eng_formant.c): one each with two cores,

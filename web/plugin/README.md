@@ -9,15 +9,37 @@ tempo. GPL-3.0-only like the rest of Felucca. Not affiliated with or endorsed by
 
 ```
 tools/build.py --gen-only           # build/gen (fonts, icons, tables, samples); no JieLi toolchain or SDK needed
-web/plugin/build.sh                 # -> build/plugin-site/ (needs emcc and node)
-node web/plugin/plugin_test.mjs build/plugin-site/plugin/felucca.wasm [build/emu/felucca.wasm]
-node web/plugin/dev/serve.mjs       # the site on http://127.0.0.1:8791/, a stand-in host on http://localhost:8792/
+web/plugin/build.sh                 # -> build/plugin-wasm/felucca.wasm, build/plugin-site-preview/ (needs emcc, node)
+PLUGIN_CHANNEL=production web/plugin/build.sh   # -> build/plugin-site/ (the one to deploy)
+node web/plugin/plugin_test.mjs build/plugin-wasm/felucca.wasm [build/emu/felucca.wasm]
+node web/plugin/dev/serve.mjs       # the preview site on http://127.0.0.1:8791/, a stand-in host on http://localhost:8792/
 ```
 
 `tools/build.py --gen-only` needs Pillow with Raqm (FriBiDi), as `./build.sh` does. `tests/run_tests.sh` builds and
-tests the plugin too when `emcc` is there. `.github/workflows/plugin-site.yml` builds the site and keeps it as an
-artifact; the site is static (Cloudflare Pages: `_headers` sets the manifest's CORS and `no-cache`, `frame-ancestors`
-for tuttidaw, the wasm's type).
+tests the plugin too when `emcc` is there. The site is static (Cloudflare Pages: `_headers` sets the manifest's CORS
+and `no-cache`, the CSPs, the wasm's type).
+
+**Channels.** `PLUGIN_CHANNEL` (`production`, `preview`, or both separated by a space; default `preview`) decides which
+pages may embed the build, and `site.mjs` writes that one list into both the page's `plugin/build-info.js`
+(`EMBEDDERS`, the handshake's check) and `_headers`' `frame-ancestors`:
+
+| Channel | Embedders | Out |
+| --- | --- | --- |
+| `production` | exactly `https://tuttidaw.com`, `https://www.tuttidaw.com` | `build/plugin-site/` |
+| `preview` | those and `http://localhost:<any port>` (tuttidaw's dev server, `dev/`) | `build/plugin-site-preview/` |
+
+`.github/workflows/plugin-site.yml` builds both from one wasm and keeps the production site as an artifact on a push to
+main (the only event a deployment may come from), the preview site on a pull request.
+
+**Source links.** The manifest's `source`, the credits page and the page's footer link the exact commit built
+(`<repo>/tree/<sha>`). With no commit, or a tree with changes not in it, the build fails; `PLUGIN_ALLOW_DIRTY=1` lets a
+preview through, its version marked `.dirty` (never a production build).
+
+**The page's CSP** (`/plugin/*`): `default-src 'none'; script-src 'self' 'sha256-<the emulator's inline module>'
+'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self';
+img-src 'self' data:; frame-src 'none'; form-action 'none'; object-src 'none'; base-uri 'self'; frame-ancestors ...`.
+`site.mjs` hashes the page's one inline module as built (and fails if there is another inline script or an inline
+handler).
 
 | File | What |
 | --- | --- |
@@ -75,11 +97,19 @@ Only builds that define `FELUCCA_TUTTI=1` (this plugin's) change; the hardware b
 - **Tempo maps.** `tempoMap: "constant"`: frame positions follow the host's map (protocol section 5: `frame(beat)` integrates it,
   linear ramps included); the FM-1 plays the range at the tempo in effect at `fromBeat`. A tempo change inside the
   range is refused (`unsupported`) unless the request says `approximation: "start-tempo"`; then the range is
-  rendered at the start tempo throughout and is as long as that tempo makes it (the host warps it).
+  rendered at the start tempo throughout and is as long as that tempo makes it (with `start-tempo`, lengths always
+  come from the constant map at the start tempo, protocol section 7; the host warps it).
+- **Tempo range.** The FM-1 plays 40 .. 240 BPM (its own BPM's range, fractional within it). A render whose tempo at
+  `fromBeat` is outside it gets `unsupported`; nothing is rendered at a different tempo.
+- **No seek.** `capabilities.seek` is `false`: every render runs from beat 0, and `render-progress` goes over the
+  pre-roll from beat 0 and the range together.
 - **Use A / use B.** `input: null`: the FM-1's own sequencer plays (use A), from beat 0, and stops at `toBeat` (the
-  nearest block): its notes are released there and the tail only rings out. With `input` (use B) the sequencer stays
-  stopped and the notes, CC and pitch bend go in as USB-MIDI would deliver them: a channel plays the part the FM-1's
-  MIDI IN setting gives it (by default channels 1..4 play T1..T4). Notes are released at `min(end, toBeat)`.
+  nearest block): its notes are released there and the tail only rings out. With `input` (use B) the FM-1's sequencer
+  never runs (protocol 7b: only the host's MIDI plays, the state gives the sounds and settings; realtime messages are
+  not taken, so the MIDI cannot start it either) and the notes, CC and pitch bend go in as USB-MIDI would deliver them:
+  a channel plays the part the FM-1's MIDI IN setting gives it (by default MIDI channels 0..3, "1..4" on the device,
+  play T1..T4: the manifest's `midiChannels`). Notes are released at `min(end, toBeat)`; a note's off comes at least
+  a block (32 frames) after its on, so a note of length 0 (or less) still sounds and is let go, never off before on.
 
 ## Sample rates
 
@@ -104,14 +134,26 @@ project, a setting) starts the next revision, `state-changed` follows once it ha
 
 ## The page
 
-- In tuttidaw's frame: the handshake (accepted from `https://tuttidaw.com`, `https://*.tuttidaw.com` and
-  `http://localhost:<port>`, from the parent window only), then `init`. Edit mode: the live FM-1 starts with the state (on its
-  own if the browser lets the frame play sound, else with Switch on). It saves nothing in this browser, and tuttidaw's
-  transport drives its preview (listen-only: it starts at `atEpochMs` less the output latency, a drift of over 20 ms
-  re-seeks). Render to tuttidaw sends `commit` (the mix, or with the T1..T4 stems). Renders run in a Worker, so the
-  FM-1 and its screen stay live. `mode: "render"` is headless: no device, no audio, only renders.
-- Opened by itself (or not connected within 4 s): the browser emulator, its saves in this browser, with a note.
-- `/credits.html`: who made what, the licences, the source of the build.
+- In tuttidaw's frame: the handshake (accepted from the build's channel's embedders, above, from the parent window
+  only), then `init`. Edit mode: the live FM-1 starts with the state (on its own if the browser lets the frame play
+  sound, else with Switch on). It saves nothing in this browser, and tuttidaw's transport drives its preview
+  (listen-only: it starts at `atEpochMs` less the output latency, a drift of over 20 ms re-seeks). A seek runs the
+  FM-1's sequencer up to the position at most 1024 blocks per audio quantum (`tutti_seek_run`, about 0.2 ms; silent
+  meanwhile, the time it takes added), so a seek minutes into a song never stalls the audio thread. Render to tuttidaw
+  sends `commit` (the mix, or with the T1..T4 stems). Renders run in a Worker, so the FM-1 and its screen stay live.
+  `mode: "render"` is headless: no device, no audio, only renders.
+- **Tempo while hosted.** The host's tempo is a runtime value: the screen shows it, but the song's own BPM (in the
+  state) stays as it was, so tuttidaw's tempo never changes the state or starts a new revision. The FM-1's BPM knob
+  and TAP still change the song's own BPM (saved with the state), which plays no part while hosted: they have no
+  audible effect in tuttidaw.
+- **Sessions.** A request keeps the session it came in with: what it sends after the session has ended (an `init`
+  finishing late, a render's chunks, a `get-state`) is dropped, never sent into the next session, and a late `init`
+  of an ended session leaves the next one uninitialised. A render still running in the Worker when the next session
+  renders is stopped with its Worker.
+- Opened by itself (or not connected within 4 s): the browser emulator, its saves in this browser, with a note; a
+  `connect` after that is refused (reload the frame to connect).
+- `/credits.html`: who made what, the licences, the source of the build. The page's footer links it (tuttidaw's
+  frame opens no popups) and shows the source URL as text too.
 
 ## Not done (yet)
 

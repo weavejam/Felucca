@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 weavejam
 // The plugin's static site (web/plugin/build.sh calls it), for Cloudflare Pages or any static host:
-//   node web/plugin/site.mjs WASM OUT FELUCCA_VERSION
+//   PLUGIN_CHANNEL=production|preview node web/plugin/site.mjs WASM OUT FELUCCA_VERSION
 //   OUT/tutti-plugin.json   the manifest (protocol-v0 1), CORS * (_headers)
-//   OUT/_headers            Cloudflare Pages: the manifest's CORS and no-cache, frame-ancestors, wasm's type
+//   OUT/_headers            Cloudflare Pages: the manifest's CORS and no-cache, frame-ancestors (the channel's embedders),
+//                           the plugin page's CSP, wasm's type
 //   OUT/plugin/             the entry: the emulator's page (web/emu/index.html) + tutti.js and its modules, the wasm
 //   OUT/emu/worklet.js      the emulator's worklet (the plugin's modules import it from there, as in the tree)
 //   OUT/credits.html, OUT/licenses/   who made what, the licences, the source
 //   OUT/index.html          a landing page
 // The build id is a hash of everything served but the manifest and plugin/build-info.js (which carry it).
-// Env: PLUGIN_SOURCE (the source repository, default https://github.com/weavejam/Felucca), PLUGIN_COMMIT (default:
-// GITHUB_SHA or git rev-parse HEAD).
+// PLUGIN_CHANNEL (required): which pages may embed it (protocol.js CHANNELS), into both plugin/build-info.js (EMBEDDERS,
+// the handshake's check) and _headers (frame-ancestors): production exactly https://tuttidaw.com and
+// https://www.tuttidaw.com; preview those and http://localhost:<any port>.
+// The source link is the commit built (git HEAD): no commit, or a tree with changes not in it, fails the build
+// (PLUGIN_ALLOW_DIRTY=1 lets a preview build through, marked as such; never a production one).
+// Env: PLUGIN_SOURCE (the source repository, default https://github.com/weavejam/Felucca).
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -18,18 +23,27 @@ import { execSync } from "child_process";
 import { fileURLToPath } from "url";
 import { OUTPUTS, SAMPLE_RATES } from "./renderer.js";
 import { STATE_VERSION, STATE_READS } from "./state.js";
-import { PROTOCOL } from "./protocol.js";
+import { PROTOCOL, CHANNELS } from "./protocol.js";
 
 export const PLUGIN_VERSION = "0.1.0";                 // semver of the plugin (+ the firmware's version as build metadata)
 const [wasmPath, out, fwVersion = "dev"] = process.argv.slice(2);
 if (!wasmPath || !out) { console.error("usage: node web/plugin/site.mjs WASM OUT FELUCCA_VERSION"); process.exit(2); }
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const src = (...p) => path.join(ROOT, ...p);
+const fail = (m) => { console.error(`site: ${m}`); process.exit(1); };
+const channel = process.env.PLUGIN_CHANNEL;
+if (!Object.hasOwn(CHANNELS, channel)) fail(`PLUGIN_CHANNEL=${Object.keys(CHANNELS).join("|")} (not ${channel})`);
+const EMBEDDERS = CHANNELS[channel];
 const SOURCE = process.env.PLUGIN_SOURCE || "https://github.com/weavejam/Felucca";
-let commit = process.env.PLUGIN_COMMIT || process.env.GITHUB_SHA || "";
-if (!commit) try { commit = execSync("git rev-parse HEAD", { cwd: ROOT }).toString().trim(); } catch {}
-const sourceAt = commit ? `${SOURCE}/tree/${commit}` : SOURCE;
-const version = `${PLUGIN_VERSION}+felucca.${fwVersion.replace(/^v/, "").replace(/[^0-9A-Za-z.-]/g, "-")}`;
+const git = (args) => execSync(`git ${args}`, { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
+let commit = "", changes = "";
+try { commit = git("rev-parse --verify HEAD"); changes = git("status --porcelain"); } catch (e) { fail(`no git commit to link the source to (${String(e.message).split("\n")[0]})`); }
+if (!/^[0-9a-f]{40}$/.test(commit)) fail(`no git commit to link the source to (${commit})`);
+const dirty = changes !== "";
+if (dirty && !(channel === "preview" && process.env.PLUGIN_ALLOW_DIRTY === "1"))
+  fail(`the tree has changes not in ${commit.slice(0, 12)}: the source link would not be this build's source\n${changes}`);
+const sourceAt = `${SOURCE}/tree/${commit}`;
+const version = `${PLUGIN_VERSION}+felucca.${fwVersion.replace(/^v/, "").replace(/[^0-9A-Za-z.-]/g, "-")}${dirty ? ".dirty" : ""}`;
 
 fs.rmSync(out, { recursive: true, force: true });
 const put = (rel, data) => {
@@ -99,7 +113,8 @@ ${licences}
 <h2>Source</h2>
 <p>The complete corresponding source of this build (the firmware with its Felucca-Engines submodule, the plugin, the
 site's build): <a href="${esc(sourceAt)}">${esc(sourceAt)}</a>. Build it with <code>tools/build.py --gen-only</code> and
-<code>web/plugin/build.sh</code> (see <code>web/plugin/README.md</code> there).</p>
+<code>web/plugin/build.sh</code> (see <code>web/plugin/README.md</code> there).${dirty ? `</p>
+<p class="notice">A development build (preview): it was built from a tree with changes not in that commit.` : ""}</p>
 </main></body></html>
 `);
 put("index.html", `<!doctype html>
@@ -134,7 +149,7 @@ const manifest = {
   version,
   build,
   license: "GPL-3.0-only",
-  source: SOURCE,
+  source: sourceAt,
   notice: "Not affiliated with or endorsed by M-VAVE.",
   entry: "/plugin/",
   icon: "/icon.svg",
@@ -146,12 +161,27 @@ const manifest = {
     stemsSumToMix: false,
     tempoMap: "constant",
     sampleRates: SAMPLE_RATES,
+    seek: false,                                       // every render plays from beat 0 (renderer.js)
+    midiChannels: [0, 1, 2, 3].map((channel) => ({ channel, name: `T${channel + 1}` })),   // (MIDI IN's default map)
   },
 };
 put("tutti-plugin.json", JSON.stringify(manifest, null, 2) + "\n");
-put("plugin/build-info.js", `// generated by web/plugin/site.mjs\nexport const BUILD = ${JSON.stringify({ id: manifest.id, version, build, source: sourceAt })};\n`);
-const ANCESTORS = "https://tuttidaw.com https://*.tuttidaw.com http://localhost:*";
-put("_headers", `# Cloudflare Pages (web/plugin/site.mjs)
+put("plugin/build-info.js", `// generated by web/plugin/site.mjs (PLUGIN_CHANNEL=${channel})
+export const BUILD = ${JSON.stringify({ id: manifest.id, version, build, source: sourceAt, channel })};
+export const EMBEDDERS = ${JSON.stringify(EMBEDDERS)};
+`);
+// the plugin page's policy: its one inline module (the emulator's page) by its hash, the rest from this origin only
+const inline = [...page.matchAll(/<script type="module">([\s\S]*?)<\/script>/g)];
+if (inline.length !== 1 || /<script(?![^>]*\bsrc=)/.test(page.replace(inline[0][0], "")) || /\son[a-z]+\s*=/i.test(page.replace(inline[0][0], "")))
+  throw new Error("site: plugin/index.html: one inline script (the emulator's module) and no inline handlers expected");
+const inlineHash = crypto.createHash("sha256").update(inline[0][1], "utf8").digest("base64");
+const ANCESTORS = EMBEDDERS.join(" ");
+const PAGE_CSP = [`default-src 'none'`, `script-src 'self' 'sha256-${inlineHash}' 'wasm-unsafe-eval'`, `worker-src 'self'`,
+                  `connect-src 'self'`, `style-src 'self' 'unsafe-inline'`, `font-src 'self'`, `img-src 'self' data:`,
+                  `frame-src 'none'`, `form-action 'none'`, `object-src 'none'`, `base-uri 'self'`,
+                  `frame-ancestors ${ANCESTORS}`].join("; ");
+// (Cloudflare Pages joins the values of every rule matching a path with commas: two policies, both enforced)
+put("_headers", `# Cloudflare Pages (web/plugin/site.mjs, PLUGIN_CHANNEL=${channel})
 /*
   Content-Security-Policy: frame-ancestors ${ANCESTORS}; object-src 'none'; base-uri 'self'
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=(), display-capture=()
@@ -163,7 +193,9 @@ put("_headers", `# Cloudflare Pages (web/plugin/site.mjs)
   Content-Type: application/json; charset=utf-8
 /*.wasm
   Content-Type: application/wasm
+/plugin/*
+  Content-Security-Policy: ${PAGE_CSP}
 /plugin/felucca.wasm
   Content-Type: application/wasm
 `);
-console.log(`plugin: ${out} (${files.length + 3} files, build ${build}, ${version})`);
+console.log(`plugin: ${out} (${channel}, ${files.length + 3} files, build ${build}, ${version})`);

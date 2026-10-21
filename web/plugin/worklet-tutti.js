@@ -7,13 +7,15 @@
 //   tutti-tempo     {bpm}: the host's tempo (fractional)
 //   tutti-play      {gen, playing, atFrame, pos}: the host's transport, listen-only: play from `pos` (frames of
 //                   44.1 kHz from beat 0) at this context's frame `atFrame`; the same generation again: only a drift
-//                   of over 20 ms moves it (re-seek); not playing: stop
+//                   of over 20 ms moves it (re-seek); not playing: stop. A seek runs the sequencer up to `pos` at most
+//                   SEEK_BLOCKS blocks per render quantum (felucca_plugin.c tutti_seek_run), silent until it is there
 //   tutti-snapshot  {id}: the music written as the autosave, the storage sectors back {type: tutti-snapshot, id, sectors}
 // and out: {type: tutti-sig, sig} when the music (project.c autosave_sig) changed.
 import { storeSectors, restoreSectors } from "../emu/worklet.js";
 
 const Base = globalThis.FeluccaProcessor;
 const DRIFT = 0.02;                                    // s
+const SEEK_BLOCKS = 1024;                               // a seek's blocks per render quantum (plugin_test.mjs times them)
 
 class FeluccaTutti extends Base {
   constructor() {
@@ -22,6 +24,7 @@ class FeluccaTutti extends Base {
     this.bpm = 0;
     this.play = null;                                  // a start to come: {gen, atFrame, pos}
     this.at = null;                                    // playing: {gen, frame, pos} (pos at that frame)
+    this.seeking = null;                               // a seek on its way: {gen, frame, pos} (pos at that frame)
     this.sentSig = null;
   }
 
@@ -29,7 +32,7 @@ class FeluccaTutti extends Base {
     if (m.type === "load") return this.load(m);
     if (m.type === "tutti-tempo") {
       this.bpm = m.bpm;
-      if (this.ex) this.ex.tutti_tempo(m.bpm);
+      if (this.ex) this.ex.tutti_tempo(m.bpm);         // (out of the FM-1's range: refused, the tempo stays)
       return;
     }
     const ex = this.ex;
@@ -61,7 +64,7 @@ class FeluccaTutti extends Base {
       this.sentDraws = -1;
       this.sentLeds = "";
       this.queue = [];
-      this.play = this.at = null;
+      this.play = this.at = this.seeking = null;
       this.sentSig = null;
       this.port.postMessage({ type: "ready", rate: ex.web_sample_rate() });
     } catch (err) {
@@ -72,24 +75,34 @@ class FeluccaTutti extends Base {
   schedule(m) {
     if (!m.playing) {
       this.play = null;
-      if (this.at) this.ex.tutti_seek(0, 0);
-      this.at = null;
+      if (this.at || this.seeking) this.ex.tutti_seek(0, 0);
+      this.at = this.seeking = null;
       return;
     }
-    if (this.at && this.at.gen === m.gen) {            // still the same run: only a drift moves it
-      const ours = this.at.pos + (m.atFrame - this.at.frame);
+    const run = this.at || this.seeking;
+    if (run && run.gen === m.gen) {                    // still the same run: only a drift moves it
+      const ours = run.pos + (m.atFrame - run.frame);
       if (Math.abs(ours - m.pos) <= DRIFT * sampleRate) return;
     }
     this.play = { gen: m.gen, atFrame: m.atFrame, pos: m.pos };
   }
 
   process(inputs, outputs) {
-    const p = this.play;
-    if (this.ex && p && currentFrame + 128 > p.atFrame) {   // (the quantum it starts in)
-      this.play = null;
+    const p = this.play, ex = this.ex;
+    let left = 0;                                      // a seek's blocks still to run
+    if (ex && p && currentFrame + 128 > p.atFrame) {    // (the quantum it starts in)
+      this.play = this.at = null;
       const pos = Math.max(0, Math.round(p.pos + (currentFrame - p.atFrame)));
-      this.ex.tutti_seek(1, pos);
-      this.at = { gen: p.gen, frame: currentFrame, pos };
+      ex.tutti_seek(1, pos);
+      this.seeking = { gen: p.gen, frame: currentFrame, pos };
+      left = ex.tutti_seek_run(SEEK_BLOCKS, 0);
+    } else if (ex && this.seeking)                     // on with it, the last (silent) quantum's time added
+      left = ex.tutti_seek_run(SEEK_BLOCKS, outputs[0][0].length / ex.tutti_block_frames());
+    if (this.seeking) {
+      if (left) return true;                           // not there yet: silence (the outputs are zeros), the UI waits
+      const s = this.seeking;
+      this.seeking = null;
+      this.at = { gen: s.gen, frame: currentFrame, pos: s.pos + (currentFrame - s.frame) };
     }
     return super.process(inputs, outputs);
   }
