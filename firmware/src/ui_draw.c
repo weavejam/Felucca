@@ -332,25 +332,25 @@ static void draw_head(void)
     char sl[3];
     int slot = head_slot(sl);
     uint32_t sig = (uint32_t)song.playing * 3u + rec * 5u + (uint32_t)(song.octave + 8) * 11u + song.sel * 13131u +
-                   (ui.msg_t ? str_hash(7u, ui.msg) : ui.layer * 7919u + (uint32_t)layer_locked() * 3u) + (uint32_t)song.g[G_BPM] * 101u + (ui.bpm_t != 0) * 31u +
+                   (ui.msg_t ? str_hash(7u, ui.msg) : ui.layer * 7919u + (uint32_t)layer_locked() * 3u) + (uint32_t)HEAD_BPM * 101u + (ui.bpm_t != 0) * 31u +
                    (uint32_t)seq_counting() * 7u + (ui_prefs & PREF_BPM_LOCK) * 4099u +
                    (uint32_t)batt_shown() * 7777u + (chain.running ? (chain.row + 1u) * 104729u : 0u) +
                    (slot ? str_hash(11u, sl) : 0u) + (uint32_t)midi_lit(song.sel) * 15485863u;   /* (1.5.5) */
     int msg = ui.msg_t || ui.layer;
     int centre = !msg || ui.bpm_t || ui.layer == LAYER_GLO;   /* the BPM being changed: it stays, the message right */
     int32_t rx = HEAD_REC_X;
-    if (song.g[G_BPM] != ui.roll_bpm) {
+    if (HEAD_BPM != ui.roll_bpm) {
         char a[8];
         fmt_int(a, ui.roll_bpm);
-        fmt_int(b, song.g[G_BPM]);
+        fmt_int(b, HEAD_BPM);
         roll_note(ROLL_BPM, a, b, ui.force);
-        ui.roll_bpm = song.g[G_BPM];
+        ui.roll_bpm = HEAD_BPM;
     } else if (ui.force) {
         ui.roll[ROLL_BPM].from[0] = 0;
     }
     if (!centre)                                       /* (a message over the BPM: no roll there to finish; CLOCK's */
         ui.roll[ROLL_BPM].from[0] = 0;                 /* BPM knob turned while one shows) */
-    fmt_int(b, song.g[G_BPM]);
+    fmt_int(b, HEAD_BPM);
     head_geo(&g, b);
     if (!ui.force && sig == ui.head_sig) {
         if (ui.roll[ROLL_BPM].from[0] && centre) {     /* rolling: the BPM's strip only */

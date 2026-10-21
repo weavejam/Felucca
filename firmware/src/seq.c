@@ -1171,12 +1171,23 @@ static void seq_tick(track_t *t, uint32_t n)
     t->seq_pos += n;
     for (;;) {
         uint32_t cur_len = step_samples(t, period, t->seq_idx);
+#if FELUCCA_TUTTI
+        uint32_t *fr = &tutti_seq_frac[trk_index(t)];
+        if (tutti_steps())                          /* hosted: the exact step lengths (core.h tutti_len) */
+            cur_len = tutti_len(t, tutti_div_q32((uint32_t)t->p[P_SDIV]), t->seq_idx, fr, 0);
+#endif
         if (t->nd_late | t->nd_early)
             seq_nd_due(t, period, len, cur_len, n);
         if (t->seq_pos < cur_len && t->seq_pos != 0x7FFFFFFFu + n)
             break;
         top = t->seq_pos >= 0x7FFFFFFFu;            /* (PLAY, a SONG section: its first step) */
         t->seq_pos = top ? (chain.running ? chain.carry : 0u) : t->seq_pos - cur_len;
+#if FELUCCA_TUTTI
+        if (top)
+            *fr = chain.running ? tutti_chain_frac : 0u;
+        else if (tutti_steps())
+            tutti_len(t, tutti_div_q32((uint32_t)t->p[P_SDIV]), t->seq_idx, fr, 1);
+#endif
         t->seq_idx = (uint16_t)((t->seq_idx + 1u) % len);
         seq_enter(t, top, len);
         if (t->p[P_SQNT] && !t->nd_fired)

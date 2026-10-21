@@ -147,6 +147,9 @@ static void chain_start(void)
     chain.row = 0;
     chain.remaining = chain.config.row[0].repeat;
     chain.carry = 0;
+#if FELUCCA_TUTTI
+    tutti_chain_frac = 0;
+#endif
     chain.running = 1;
     chain.armed = 0;
     chain_apply();
@@ -171,6 +174,12 @@ static void chain_tick(uint32_t n)
     if (!chain.running || t->seq_pos >= 0x7FFFFFFFu || t->seq_idx + 1u != (uint32_t)t->p[P_SLEN])
         return;
     length = step_samples(t, div_samples((uint32_t)t->p[P_SDIV]), t->seq_idx);
+#if FELUCCA_TUTTI
+    if (tutti_steps()) {                            /* hosted: the clock track's exact step (seq.c seq_tick) */
+        tutti_chain_frac = tutti_seq_frac[chain.clk % NTRK];
+        length = tutti_len(t, tutti_div_q32((uint32_t)t->p[P_SDIV]), t->seq_idx, &tutti_chain_frac, 1);
+    }
+#endif
     if (t->seq_pos + n < length)
         return;
     if (chain.remaining > 1u) {

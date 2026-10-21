@@ -160,6 +160,9 @@
 # Browser emulator (web/emu, when emcc is there): the firmware in WebAssembly (build/emu) boots, plays keys and MIDI,
 #                   draws, lights its LEDs, keeps a save across instances, plays a song bit for bit as the same file
 #                   built with cc (web/emu/native_check.c); the cost of 1 s of a heavy song against real time.
+# FM-1 plugin for tuttidaw (web/plugin, with the emulator): FELUCCA_TUTTI's build plays the emulator's song bit for
+#                   bit; renders deterministic, of exact lengths, fractional tempo on the grid, stems, 48 kHz, state;
+#                   the plugin protocol against a fake host (web/plugin/plugin_test.mjs).
 # PHYS (tests/phys_test.c): stability over the whole parameter and pitch range, the worst-case cost against
 #                   the heaviest factory preset, demos in build/phys_demo/; tests/phys_ref.cpp compares the
 #                   fixed-point models with DaisySP's float originals when DaisySP is there (DAISYSP=path).
@@ -510,6 +513,10 @@ else
     run "browser emulator: the same song from the native build" "$OUT/emu_native" "$OUT/emu_native.f32"
     run "browser emulator: boot, keys, MIDI, screen, LEDs, PLAY, a save kept across instances, = native, cost" \
         node web/emu/emu_test.mjs build/emu/felucca.wasm "$OUT/emu_native.f32"
+    run "FM-1 plugin: the firmware with FELUCCA_TUTTI and its preview site (web/plugin/build.sh)" \
+        env PLUGIN_CHANNEL=preview PLUGIN_ALLOW_DIRTY=1 sh web/plugin/build.sh
+    run "FM-1 plugin: renders, stems, fractional tempo, state, the tutti-plugin/0 protocol against a fake host" \
+        node web/plugin/plugin_test.mjs build/plugin-wasm/felucca.wasm build/emu/felucca.wasm
 fi
 
 [ $fail -eq 0 ] && echo "ALL HOST TESTS PASSED" || { echo "HOST TESTS FAILED"; exit 1; }

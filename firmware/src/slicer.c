@@ -61,12 +61,18 @@ typedef struct {
 static sl_t sl[NTRK];
 static uint8_t sl_lent;          /* perform.c has borrowed sl_buf: STUT plays live, records nothing */
 
+#if FELUCCA_TUTTI
+static uint32_t tutti_sl_frac[NTRK];            /* hosted: each step clock's fraction of a sample (sl_enter) */
+#endif
 static void slicer_start(void)   /* seq_start: the next block starts step 0 of every track */
 {
     uint32_t k;
     for (k = 0; k < NTRK; k++) {
         sl[k].idx = 15;
         sl[k].pos = sl[k].len = 0;
+#if FELUCCA_TUTTI
+        tutti_sl_frac[k] = 0;
+#endif
     }
 }
 
@@ -79,6 +85,13 @@ static void sl_enter(const track_t *t, sl_t *s)
     s->idx = (uint8_t)((s->idx + 1u) & 15u);
     s->base = (uint32_t)FS * 60u / (uint32_t)song.g[G_BPM] / SL_DEN[(uint32_t)t->p[P_SLRATE] % 6u];
     s->len = swing_step_len(t, s->base, s->idx);   /* core.h, as seq.c step_samples */
+#if FELUCCA_TUTTI
+    if (tutti_beat_q32) {                           /* hosted: the host's tempo, exact (core.h tutti_len) */
+        uint64_t q = tutti_beat_q32 / SL_DEN[(uint32_t)t->p[P_SLRATE] % 6u];
+        s->base = (uint32_t)((q + 0x80000000u) >> 32);
+        s->len = tutti_len(t, q, s->idx, &tutti_sl_frac[t - trk], 1);
+    }
+#endif
     s->pos = 0;
     s->bit = (uint8_t)((sl_pattern(t) >> s->idx) & 1u);
     s->rp = 0;

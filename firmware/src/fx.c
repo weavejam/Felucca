@@ -184,6 +184,11 @@ static inline int32_t spk_bass(int32_t m)
     return sb_hl + (sb_hl >> 1);      /* x1.5 (#180: x3 peaked at 1.5 .. 3.5 x a full-scale kick, the limiter */
 }                                     /* pulled the mix down up to 16 dB on each hit and the buzz took over) */
 
+#if FELUCCA_TUTTI
+/* hosted: the limiter's gain on the last sample (Q15, 32768 none) and on each of the block's (mix_block, perf_master):
+ * the parts' stems get it too (web/plugin), so they add up to the mix as the limiter left it */
+static int32_t tutti_lim_g, tutti_lim[CTL];
+#endif
 static inline void master_out(int32_t *l, int32_t *r)
 {
     int32_t al, ar, a;
@@ -204,10 +209,16 @@ static inline void master_out(int32_t *l, int32_t *r)
         lim_env += (a - lim_env) >> 2;
     else if (lim_env > LIM_T)
         lim_env -= ((lim_env - LIM_T) >> 12) + 1;
+#if FELUCCA_TUTTI
+    tutti_lim_g = 32768;
+#endif
     if (lim_env > LIM_T) {
         int32_t g = (int32_t)(((uint32_t)LIM_T << 15) / (uint32_t)lim_env);   /* < 32768 */
         *l = ((*l >> 4) * g) >> 11;                      /* >> 4 first: |l| may be far above Q15 */
         *r = ((*r >> 4) * g) >> 11;
+#if FELUCCA_TUTTI
+        tutti_lim_g = g;
+#endif
     }
     *l = softclip(*l);
     *r = softclip(*r);
@@ -218,8 +229,21 @@ static const uint8_t DIV_DEN[6] = {1, 2, 4, 8, 3, 6};    /* original IDs stay fi
 static uint32_t midi_beat_samples;                    /* zero until an external clock has a measured tempo */
 static uint32_t beat_samples(void)
 {
+#if FELUCCA_TUTTI
+    if (tutti_beat_q32 && !(song.g[G_CLOCK] && midi_beat_samples))
+        return (uint32_t)((tutti_beat_q32 + 0x80000000u) >> 32);   /* (rounded: delay, LFO and ENV SYNC, the ARP) */
+#endif
     return song.g[G_CLOCK] && midi_beat_samples ? midi_beat_samples : (uint32_t)FS * 60u / (uint32_t)song.g[G_BPM];
 }
+#if FELUCCA_TUTTI
+static uint32_t tutti_seq_frac[NTRK], tutti_chain_frac;   /* the step clocks (seq.c), a SONG section's start */
+static int tutti_steps(void) { return tutti_beat_q32 && !song.g[G_CLOCK]; }   /* (an external clock: its own steps) */
+static uint64_t tutti_div_q32(uint32_t div)          /* div_samples, exact */
+{
+    return div < 6u ? tutti_beat_q32 / DIV_DEN[div] : div < 10u ? tutti_beat_q32 << (div - 5u)
+                                                                : tutti_beat_q32 / DIV_DEN[div % 6u];
+}
+#endif
 static uint32_t div_samples(uint32_t div)
 {
     uint32_t quarter = beat_samples();
@@ -967,6 +991,9 @@ static __attribute__((noinline)) void perf_master(int32_t *out, uint32_t n)
     for (i = 0; i < n; i++) {
         int32_t l = mix_l[i], r = mix_r[i];
         master_out(&l, &r);
+#if FELUCCA_TUTTI
+        tutti_lim[i] = tutti_lim_g;
+#endif
         out[2u * i] = l;
         out[2u * i + 1u] = r;
     }
@@ -1028,6 +1055,29 @@ static uint32_t mix_split(void)
 }
 #endif
 
+#if FELUCCA_TUTTI
+/* hosted (web/plugin): each part into sums of its own (its dry mix and its sends, as the second core's mx[1]), then
+ * added into the mix: integers, so the mix is bit for bit what it is without (the order of the sums changes nothing).
+ * tutti_parts (web/plugin) takes them for the parts' stems, after the parts and before the buses */
+static mixsum_t tutti_mx[NPART];
+static void tutti_parts(uint32_t n);
+static void tutti_part(uint32_t p, uint32_t n)
+{
+    mixsum_t *sm = &tutti_mx[p];
+    uint32_t i;
+    for (i = 0; i < n; i++)
+        sm->l[i] = sm->r[i] = sm->c[i] = sm->d[i] = sm->v[i] = 0;
+    mix_part(&trk[p], n, sm);
+    for (i = 0; i < n; i++) {
+        mix_l[i] += sm->l[i];
+        mix_r[i] += sm->r[i];
+        send_c[i] += sm->c[i];
+        send_d[i] += sm->d[i];
+        send_r[i] += sm->v[i];
+    }
+}
+#endif
+
 static void mix_block(int32_t *out, uint32_t n)
 {
     uint32_t i;
@@ -1044,7 +1094,11 @@ static void mix_block(int32_t *out, uint32_t n)
     c1_blocks += m != 0;
     for (i = 0; i < NPART; i++)
         if (!(m >> i & 1u))
+#if FELUCCA_TUTTI
+            tutti_part(i, n);                           /* hosted: its own sums first (its stem), then the mix */
+#else
             mix_part(&trk[i], n, &mx[0]);
+#endif
     if (m) {
         const mixsum_t *sm = &mx[1];
         if (C1_WAIT())                                  /* it stopped answering (held from now on): its parts here */
@@ -1059,6 +1113,9 @@ static void mix_block(int32_t *out, uint32_t n)
     }
     for (i = 0; i < NPART; i++)                         /* the LFOs' blocks, part by part (voice.c) */
         track_lfo_end(&trk[i]);
+#if FELUCCA_TUTTI
+    tutti_parts(n);
+#endif
 #else
     for (i = 0; i < NPART; i++)                         /* (one core: as 1.6) */
         mix_part(&trk[i], n);
@@ -1078,6 +1135,9 @@ static void mix_block(int32_t *out, uint32_t n)
         int32_t l = (((mix_l[i] + wet[i]) >> 2) * mg) >> 10;
         int32_t r = (((mix_r[i] + wet[i]) >> 2) * mg) >> 10;
         master_out(&l, &r);
+#if FELUCCA_TUTTI
+        tutti_lim[i] = tutti_lim_g;
+#endif
         out[2u * i] = l;
         out[2u * i + 1u] = r;
     }

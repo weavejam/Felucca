@@ -104,6 +104,20 @@ keeps the flash's storage sectors (projects, user presets, settings) in the brow
 MIDI out, the editor, updates), TRS MIDI and the user sample slots. A build of it is on the site:
 <https://hugelton.github.io/Felucca/webapp/try/>.
 
+## FM-1 plugin for tuttidaw
+
+```
+tools/build.py --gen-only           # only build/gen (the generated headers): no JieLi toolchain or SDK
+web/plugin/build.sh                 # -> build/plugin-site-preview/, a static site (PLUGIN_CHANNEL=production:
+                                    #    build/plugin-site/; a clean tree, see web/plugin/README.md)
+node web/plugin/dev/serve.mjs       # the preview site and a stand-in host, http://localhost:8792/
+```
+
+`web/plugin/` builds the emulator with `FELUCCA_TUTTI` (the host's fractional tempo, each part's sums for its stem) and adds
+a headless renderer and the [tuttidaw](https://tuttidaw.com) plugin protocol (`tutti-plugin/0`) to its page. Details:
+[web/plugin/README.md](web/plugin/README.md). `.github/workflows/plugin-site.yml` builds both channels' sites and keeps
+the production one (a push to main) or the preview one (a pull request) as an artifact.
+
 ## Tests
 
 ```

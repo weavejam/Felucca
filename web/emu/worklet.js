@@ -159,4 +159,5 @@ if (typeof registerProcessor === "function") {
     }
   }
   registerProcessor("felucca", Felucca);
+  globalThis.FeluccaProcessor = Felucca;              // (web/plugin/worklet-tutti.js builds on it)
 }
