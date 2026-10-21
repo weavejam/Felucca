@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 weavejam
+# The FM-1 plugin for tuttidaw (web/plugin/README.md): the generated headers (no JieLi toolchain), the browser emulator
+# and the plugin built with Emscripten, their tests, and the plugin's static site kept as an artifact
+# (build/plugin-site: the manifest at its root, _headers for Cloudflare Pages).
+name: plugin-site
+
+on:
+  push:
+    branches: [main]
+    paths: ["firmware/**", "web/**", "tools/**", "assets/**", ".github/workflows/plugin-site.yml"]
+  pull_request:
+    paths: ["firmware/**", "web/**", "tools/**", "assets/**", ".github/workflows/plugin-site.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: "6.0.13"
+          actions-cache-folder: emsdk-cache
+
+      - name: Generated headers (fonts, icons, tables, samples)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q libfribidi0   # Pillow's Raqm loads it (OpenType features)
+          python3 -m pip install -q Pillow fonttools
+          python3 tools/build.py --gen-only
+
+      - name: Browser emulator (web/emu) and its test
+        run: |
+          sh web/emu/build.sh
+          node web/emu/emu_test.mjs build/emu/felucca.wasm
+
+      - name: FM-1 plugin (web/plugin) and its test
+        run: |
+          sh web/plugin/build.sh
+          node web/plugin/plugin_test.mjs build/plugin-site/plugin/felucca.wasm build/emu/felucca.wasm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fm1-plugin-site
+          path: build/plugin-site
+          include-hidden-files: true
+          if-no-files-found: error
+
+      # Deployment to Cloudflare Pages (by the lead for now). To deploy from here: a Pages project, the secrets
+      # CLOUDFLARE_API_TOKEN (Pages: Edit) and CLOUDFLARE_ACCOUNT_ID, then uncomment:
+      # - name: Deploy to Cloudflare Pages
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   uses: cloudflare/wrangler-action@v3
+      #   with:
+      #     apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      #     accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      #     command: pages deploy build/plugin-site --project-name=fm1-tutti-plugin --branch=main
