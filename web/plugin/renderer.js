@@ -21,8 +21,8 @@ export const OUTPUTS = [
   { id: "t4", name: "T4", channels: 2 },
 ];
 export const MAX_SECONDS = 600, MAX_TAIL_MS = 10000;
-export const MIN_BPM = 40, MAX_BPM = 240;
-export const BLOCK = 32;                               // the firmware's control block (felucca_plugin.c tutti_block_frames)              // the firmware's tempo range (felucca_plugin.c tutti_bpm_min/max)
+export const MIN_BPM = 40, MAX_BPM = 240;              // the firmware's tempo range (felucca_plugin.c tutti_bpm_min/max)
+export const BLOCK = 32;                               // the firmware's control block (felucca_plugin.c tutti_block_frames)
 
 export class RenderError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -111,7 +111,8 @@ export function planRender(req, { tempoMap = "constant" } = {}) {
 // use B: the notes (released at min(their end, toBeat)), CC and pitch bend, at 44.1 kHz frames of the plugin's
 // timeline, in time order; at one frame: controllers, then note-offs, then note-ons. A note's off comes a block after
 // its on at least (protocol 7b: a note of length <= 0 still gets its off after its on; the firmware takes MIDI per
-// block, so an off in the on's block would let it go before it sounded)
+// block, so an off in the on's block would let it go before it sounded). Moved that way, an off never goes past the
+// next on of its pitch on its channel: at that frame at the latest, before the on (it would cut that note)
 export function midiEvents(input, bpm, toBeat) {
   const f = (b) => Math.round(((Math.max(0, b) * 60) / bpm) * NATIVE_RATE);
   const ev = [], ch = (c) => Number.isInteger(c) && c >= 0 && c <= 15;
@@ -120,12 +121,27 @@ export function midiEvents(input, bpm, toBeat) {
     throw new RenderError("bad-request", "input: notes, cc, pitchBend");
   if (input.notes.length + input.cc.length + input.pitchBend.length > 30000)
     throw new RenderError("too-large", "input: at most 30000 events");
+  const ons = new Map();                               // channel * 128 + pitch -> the on frames, sorted
   for (const n of input.notes) {
     if (!n || !finite(n.beat) || !finite(n.lengthBeats) || n.lengthBeats < 0 || !int(n.pitch, 0, 127) ||
         !int(n.velocity, 1, 127) || !ch(n.channel))
       throw new RenderError("bad-request", "input.notes: beat, lengthBeats >= 0, pitch 0..127, velocity 1..127, channel 0..15");
     if (n.beat >= toBeat) continue;
-    const on = f(n.beat), off = Math.max(on + BLOCK, f(Math.min(n.beat + n.lengthBeats, toBeat)));
+    const k = n.channel * 128 + n.pitch;
+    if (!ons.has(k)) ons.set(k, []);
+    ons.get(k).push(f(n.beat));
+  }
+  for (const a of ons.values()) a.sort((x, y) => x - y);
+  const nextOn = (k, on) => {                          // the first on of that key after frame `on`
+    const a = ons.get(k);
+    let lo = 0, hi = a.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] <= on) lo = m + 1; else hi = m; }
+    return lo < a.length ? a[lo] : Infinity;
+  };
+  for (const n of input.notes) {
+    if (n.beat >= toBeat) continue;
+    const on = f(n.beat), end = f(Math.min(n.beat + n.lengthBeats, toBeat));
+    const off = Math.max(end, Math.min(on + BLOCK, nextOn(n.channel * 128 + n.pitch, on)));
     ev.push({ frame: on, order: 2, status: 0x90 | n.channel, d1: n.pitch, d2: n.velocity });
     ev.push({ frame: off, order: 1, status: 0x80 | n.channel, d1: n.pitch, d2: 0 });
   }

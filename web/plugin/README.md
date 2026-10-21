@@ -109,7 +109,8 @@ Only builds that define `FELUCCA_TUTTI=1` (this plugin's) change; the hardware b
   not taken, so the MIDI cannot start it either) and the notes, CC and pitch bend go in as USB-MIDI would deliver them:
   a channel plays the part the FM-1's MIDI IN setting gives it (by default MIDI channels 0..3, "1..4" on the device,
   play T1..T4: the manifest's `midiChannels`). Notes are released at `min(end, toBeat)`; a note's off comes at least
-  a block (32 frames) after its on, so a note of length 0 (or less) still sounds and is let go, never off before on.
+  a block (32 frames) after its on, so a note of length 0 (or less) still sounds and is let go, never off before on;
+  moved that way, it still comes before the next note of the same pitch on the same channel, never cutting it.
 
 ## Sample rates
 
@@ -149,7 +150,8 @@ project, a setting) starts the next revision, `state-changed` follows once it ha
 - **Sessions.** A request keeps the session it came in with: what it sends after the session has ended (an `init`
   finishing late, a render's chunks, a `get-state`) is dropped, never sent into the next session, and a late `init`
   of an ended session leaves the next one uninitialised. A render still running in the Worker when the next session
-  renders is stopped with its Worker.
+  renders is stopped with its Worker; one whose session ended while its state was being made never starts (it never
+  touches the next session's Worker), and that late state is never kept as one of the next session's revisions.
 - Opened by itself (or not connected within 4 s): the browser emulator, its saves in this browser, with a note; a
   `connect` after that is refused (reload the frame to connect).
 - `/credits.html`: who made what, the licences, the source of the build. The page's footer links it (tuttidaw's

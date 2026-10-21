@@ -14,7 +14,7 @@ import { storeSectors } from "../emu/worklet.js";
 import { render, planRender, midiEvents, device, frameAt, RenderError, NATIVE_RATE, MIN_BPM, MAX_BPM } from "./renderer.js";
 import { packState, unpackState, stateEquals, STATE_VERSION } from "./state.js";
 import { PluginSession, embedderAllowed, CHANNELS, PROTOCOL, INITIAL_CREDITS } from "./protocol.js";
-import { FM1Engine } from "./engine.js";
+import { FM1Engine, PreviewTempo } from "./engine.js";
 import { Resampler } from "./resample.js";
 
 const wasmPath = process.argv[2] || "build/plugin-wasm/felucca.wasm", emuPath = process.argv[3];
@@ -229,6 +229,17 @@ if (!FAST) {
   const kinds = ev.map((e) => `${e.status >> 4 === 9 ? "on" : "off"}@${e.frame}`);
   const want = [`on@0`, `off@${at(1)}`, `on@${at(1)}`, `off@${at(1) + 32}`, `on@${at(2)}`, `off@${at(2) + 32}`, `on@${at(3)}`, `off@${at(3) + 32}`];
   check(`zero-length notes: each off a block after its on (${kinds.slice(1, 4).join(" ")})`, kinds.join() === want.join());
+  // moved a block on, an off stops at the next on of its pitch on its channel (before it), not other pitches or channels
+  const near = 10 / 22050, other = { ...n(near, 0, 61) }, ch1 = { ...n(near, 0), channel: 1 };
+  const ev2 = midiEvents({ notes: [n(0, 0), n(near, 2), other, ch1], cc: [], pitchBend: [], preRollBeats: 0 }, 120, 8);
+  const k2 = ev2.map((e) => `${e.status >> 4 === 9 ? "on" : "off"}${e.status & 15}:${e.d1}@${e.frame}`);
+  const want2 = ["on0:60@0", "off0:60@10", "on0:60@10", "on0:61@10", "on1:60@10", "off0:61@42", "off1:60@42", `off0:60@${at(near + 2)}`];
+  check(`zero-length notes: the moved off not past the next on of its pitch and channel (${k2.slice(0, 3).join(" ")})`, k2.join() === want2.join());
+  const two = (await renderAll({}, req({ input: { notes: [n(1, 0), n(1 + near, 2)], cc: [], pitchBend: [], preRollBeats: 0 }, toBeat: 4, outputs: ["t1"] }))).out.t1[0];
+  const alone = (await renderAll({}, req({ input: { notes: [n(1 + near, 2)], cc: [], pitchBend: [], preRollBeats: 0 }, toBeat: 4, outputs: ["t1"] }))).out.t1[0];
+  const mid = (x) => rms(x.subarray(at(2), at(2.75)));
+  check(`zero-length note then the same pitch 10 frames on: that note held (rms ${mid(two).toFixed(4)}, alone ${mid(alone).toFixed(4)})`,
+        mid(alone) > 1e-3 && mid(two) > mid(alone) / 2);
   const o = (await renderAll({}, req({ input: { notes: [n(1, 0)], cc: [], pitchBend: [], preRollBeats: 0 }, toBeat: 4, outputs: ["t1"] }))).out.t1[0];
   const held = (await renderAll({}, req({ input: { notes: [n(1, 8)], cc: [], pitchBend: [], preRollBeats: 0 }, toBeat: 4, outputs: ["t1"] }))).out.t1[0];
   const end = (x) => peak(x.subarray(x.length - 44100));
@@ -307,8 +318,11 @@ if (!FAST) {
 // ================================================================== the protocol (a fake host)
 // a live device as the page has it (tutti.js live): the wasm not headless, its edits checked by tutti_sig
 class NodeLive {
-  constructor() { this.ex = null; this.loads = 0; this.transports = []; }
-  async load(sectors) {
+  constructor() {
+    this.ex = null; this.loads = 0; this.transports = []; this.tempos = [];
+    this.tempo = new PreviewTempo((bpm) => { this.tempos.push(bpm); this.ex.tutti_tempo(bpm); });   // (as the page's)
+  }
+  async load(sectors, context) {
     const { exports: ex } = await WebAssembly.instantiate(mod, {});
     ex._initialize(); ex.web_nor_erase();
     const nor = new Uint8Array(ex.memory.buffer, ex.web_nor(), ex.web_nor_size());
@@ -318,6 +332,8 @@ class NodeLive {
     this.ex = ex;
     this.sig = ex.tutti_sig();
     this.loads++;
+    this.tempo.reset();
+    this.context(context);
   }
   edit(fn) {                                          // a user's edit, then the page's check
     fn(this.ex);
@@ -330,7 +346,7 @@ class NodeLive {
     this.sig = this.ex.tutti_sig();
     return storeSectors(new Uint8Array(this.ex.memory.buffer, this.ex.web_nor(), this.ex.web_nor_size()));
   }
-  context() {}
+  context(ctx) { this.tempo.context(ctx); }
   transport(t) { this.transports.push(t); }
   close() { this.closed = true; }
 }
@@ -628,6 +644,13 @@ const collect = (h, renderId) => {                    // the chunks of a render,
   h.send({ type: "init", id: "i", sampleRate: 44100, context: ctxOf(120), state: null, stateVersion: null, mode: "edit" });
   const i = await h.reply("i");
   check("edit mode: init:ok, the live device loaded", i.type === "init:ok" && live.loads === 1);
+  h.send({ type: "context", context: ctxOf(97.5) });
+  h.send({ type: "context", context: { timeMap: { tempoPoints: [] } } });
+  h.send({ type: "get-state", id: "g0" });
+  await h.reply("g0");
+  check(`context after init: to the live preview, its tempo ${live.tempos.join(" -> ")}; a malformed one changes nothing`,
+        live.tempos.join() === "120,97.5" && live.tempo.bpm === 97.5 &&
+        !h.got.some((m) => m.type === "error"));
   h.send({ type: "get-state", id: "g1" });
   const g1 = await h.reply("g1");
   live.edit((ex) => ex.web_test_heavy());
@@ -675,6 +698,44 @@ const collect = (h, renderId) => {                    // the chunks of a render,
   await sleep(20);
   check("close: the live device closed", live.closed === true);
   h.close(); h2.close();
+}
+
+// ---- the engine across sessions: a snapshot asked for in a session that ended comes late
+{
+  const snaps = [], renders = [];
+  const live = { load: async () => {}, context() {}, transport() {}, close() {},
+                 snapshot: () => new Promise((res) => snaps.push(res)) };
+  const engine = new FM1Engine({ render: (sectors) => { renders.push(sectors); return { frames: 1, outputs: ["mix"] }; }, live });
+  const A = { 0xE5000: new Uint8Array(4096).fill(1) }, B = { 0xE5000: new Uint8Array(4096).fill(2) };
+  const C = { 0xE5000: new Uint8Array(4096).fill(3) };
+  // a render of the ended session (its sink cancelled meanwhile): never rendered, never into the worker
+  await engine.init({ context: ctxOf(120), state: null, stateVersion: null, mode: "edit" });
+  engine.changed();
+  let ended = false;
+  const r1 = engine.render(req({ stateRevision: 2 }), { cancelled: () => ended }).then(() => "rendered", (e) => e.code);
+  await sleep(0);
+  ended = true;
+  snaps.shift()(A);
+  check(`a render whose session ended while its state was made: ${await r1}, nothing rendered`, (await r1) === "cancelled" && renders.length === 0);
+  // a get-state of the ended session: the new session's revision 1 stays its own
+  engine.changed();
+  const g = engine.getState().then(() => "ok", (e) => e.code);
+  await sleep(0);
+  const stB = packState(B);
+  await engine.init({ context: ctxOf(120), state: stB, stateVersion: STATE_VERSION, mode: "edit" });
+  snaps.shift()(C);
+  const gs = await g, now = await engine.getState();
+  check(`a late snapshot of an ended session: dropped (${gs}), the new session's revision 1 its init state`,
+        gs === "session-ended" && now.stateRevision === 1 && stateEquals(now.state, stB) && engine.states.size === 1 && snaps.length === 0);
+  // a snapshot kept as the revision it was asked for, a change meanwhile: the next revision
+  engine.changed();
+  const g2 = engine.getState();
+  await sleep(0);
+  engine.changed();
+  snaps.shift()(C);
+  const s2 = await g2;
+  check(`a change while a snapshot is made: kept as revision ${s2.stateRevision}, now ${engine.revision}`,
+        s2.stateRevision === 2 && engine.revision === 3 && engine.dirty && stateEquals(engine.states.get(2).buf, packState(C)));
 }
 
 console.log(fails ? `plugin: ${fails} FAILED` : "plugin: all ok");
