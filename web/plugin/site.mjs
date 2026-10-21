@@ -9,7 +9,7 @@
 //   OUT/emu/worklet.js      the emulator's worklet (the plugin's modules import it from there, as in the tree)
 //   OUT/credits.html, OUT/licenses/   who made what, the licences, the source
 //   OUT/index.html          a landing page
-// The build id is a hash of everything served but the manifest and plugin/build-info.js (which carry it).
+// The build id is a hash of everything served but the manifest and plugin/build-info.js (which carry it), and the channel.
 // PLUGIN_CHANNEL (required): which pages may embed it (protocol.js CHANNELS), into both plugin/build-info.js (EMBEDDERS,
 // the handshake's check) and _headers (frame-ancestors): production exactly https://tuttidaw.com and
 // https://www.tuttidaw.com; preview those and http://localhost:<any port>.
@@ -140,6 +140,7 @@ for (const f of files.map((f) => path.relative(out, f).split(path.sep).join("/")
   h.update(f + "\0");
   h.update(fs.readFileSync(path.join(out, f)));
 }
+h.update(`channel\0${channel}\0${EMBEDDERS.join(" ")}`);           // (the channel too: its embedders differ)
 const build = h.digest("hex").slice(0, 16);
 const manifest = {
   protocol: PROTOCOL,
