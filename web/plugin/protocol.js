@@ -190,7 +190,8 @@ export class PluginSession {
       cancelled: () => r.cancel || !this.live(sess),
       progress: (f) => {
         const t = this.now();
-        if (t - r.lastProgress < PROGRESS_MS) return;
+        if (t - r.lastProgress < PROGRESS_MS && !(f >= 1 && !r.sentAll)) return;   // (the last, 1, always out)
+        if (f >= 1) r.sentAll = true;
         r.lastProgress = t;
         this.send({ type: "render-progress", renderId: r.renderId, fraction: Math.max(0, Math.min(1, f)) }, [], sess);
       },

@@ -491,7 +491,9 @@ const collect = (h, renderId) => {                    // the chunks of a render,
         h.got.indexOf(a.ok) === -1);
   check("render via the session twice: the same bytes", a.chunks.length === b.chunks.length &&
         a.chunks.every((c, i) => c.output === b.chunks[i].output && same(c.channels[0], b.chunks[i].channels[0]) && same(c.channels[1], b.chunks[i].channels[1])));
-  check("progress: render-progress messages, fraction 0..1", h.got.some((m) => m.type === "render-progress" && m.fraction >= 0 && m.fraction <= 1));
+  const pw = h.got.filter((m) => m.type === "render-progress" && m.renderId === "w2");
+  check(`progress: render-progress messages, fraction 0..1, the last 1 (${pw.length} for w2)`, h.got.some((m) => m.type === "render-progress" && m.fraction >= 0 && m.fraction <= 1) &&
+        pw.length > 0 && pw.at(-1).fraction === 1 && pw.every((m, i) => !i || m.fraction >= pw[i - 1].fraction));
   h.close();
 }
 
