@@ -13,12 +13,14 @@
 //   tutti-hosted    the page is tuttidaw's (not the emulator on its own): the internal clock at the host's tempo from
 //                   now on, this device and those loaded after it, whatever CLK says (felucca_plugin.c
 //                   tutti_clock_internal: a runtime override, the saved setting stays the user's)
-// and out: {type: tutti-sig, sig} when the music (project.c autosave_sig) changed.
+// and out: {type: tutti-sig, sig} when the music (project.c autosave_sig) changed; {type: tutti-view, view} with every
+// frame published, the parts as the page's Parts panel shows them (felucca_plugin.c tutti_view, VIEW_BYTES).
 import { storeSectors, restoreSectors } from "../emu/worklet.js";
 
 const Base = globalThis.FeluccaProcessor;
 const DRIFT = 0.02;                                    // s
 const SEEK_BLOCKS = 1024;                               // a seek's blocks per render quantum (plugin_test.mjs times them)
+const VIEW_BYTES = 4 * 64 + 8;                         // felucca_plugin.c tt_view (layout.js PARTS_VIEW reads it)
 
 class FeluccaTutti extends Base {
   constructor() {
@@ -119,6 +121,8 @@ class FeluccaTutti extends Base {
 
   publish() {
     super.publish();
+    const view = new Uint8Array(this.ex.memory.buffer, this.ex.tutti_view(), VIEW_BYTES).slice();
+    this.port.postMessage({ type: "tutti-view", view }, [view.buffer]);
     const sig = this.ex.tutti_sig() >>> 0;
     if (sig !== this.sentSig) {
       this.sentSig = sig;

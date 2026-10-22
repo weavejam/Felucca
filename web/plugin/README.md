@@ -52,6 +52,7 @@ handler).
 | `protocol.js` | the session: handshake, messages, state machine, credited chunks |
 | `engine.js` | state revisions, renders of a revision, the live device |
 | `tutti.js`, `worklet-tutti.js`, `render-worker.js` | the page: the emulator's page and worklet with the protocol, renders in a Worker |
+| `layout.js` | the page's layout at any frame size, the Parts panel |
 | `site.mjs`, `build.sh` | the static site, the manifest |
 | `dev/` | a stand-in host and a server for development |
 | `plugin_test.mjs` | the tests (Node) |
@@ -120,6 +121,14 @@ Only builds that define `FELUCCA_TUTTI=1` (this plugin's) change; the hardware b
   moved that way, it still comes before the next note of the same pitch on the same channel, never cutting it.
   A channel that used the sustain pedal (CC64) gets a pedal-up at `toBeat`, before the notes' offs there (a later
   pedal-up is past the range and dropped): nothing is held into the tail, the releases and the FX tails ring out.
+- **Latches in use B.** A part saved with ARP 2's HOLD on keeps the arp's chord after its keys are let go, so the host's
+  note-offs would never stop it and the arp would play on through the tail. In a use B render the host's notes last as
+  long as the host says whatever HOLD is (`tutti_input_end`, core.h `tutti_host_notes`: a runtime override, as the
+  clock's below): each note-off takes its note out of the arp's chord, and with the block nearest to `toBeat` (after
+  that block's MIDI) every note still held, a pedal still down and the arp's chord are let go (seq.c
+  `tutti_release_host`). Voices go into their releases, the FX tails ring on, no new note starts; such a part renders
+  sample for sample as without HOLD. HOLD stays saved in the state and works as always on the live Felucca and on the
+  FM-1. (HOLD is the only latch of notes in Felucca: FX LATCH holds performance effects, played on the panel only.)
 - **Clock.** Hosted playback (a render, the live preview in tuttidaw's frame) runs Felucca's internal clock at the
   host's tempo whatever its CLK setting says (`tutti_clock_internal`, a runtime override: no clock pulses come from
   a host). The setting itself stays the user's: shown, saved in the state, `get-state` returns it.
@@ -149,6 +158,21 @@ revision never has two different states.
 
 ## The page
 
+- **Any frame size, no scrolling** (`layout.js`). The page is a sheet of a natural size scaled to fit the frame
+  (contained, centred; a CSS transform, so the controls are hit where they are drawn), by the frame's shape:
+  - *wide* (1.3:1 or wider, at least 900 x 540 CSS px; tuttidaw's desktop window): the FM-1 drawn upright at the full
+    height, the **Parts panel** beside it: for each of T1..T4 the sound and its engine, the MIDI channel it plays
+    (where tuttidaw's MIDI tracks reach it), MUTE / ARP / HOLD, a level meter, and its pattern (LEN steps: notes, ties,
+    accents, the step playing), read from the live Felucca as it plays (`felucca_plugin.c` `tutti_view`, read only:
+    nothing on the device changes; the levels are the plugin's own, so the MIXER page keeps its meters); the render
+    controls, the computer keys and the credits;
+  - *landscape* (any other frame wider than tall): the FM-1's own drawing, the render controls and a line of credits
+    under it;
+  - *portrait* (a phone's sheet): the upright drawing, the same under it.
+  The frame can be resized to anything (tuttidaw: 480 x 360 and up); `resize` asks once, when connected, for the wide
+  layout's own shape (1280 x 800), a preference only. Opened by itself the page lays out the same way.
+  `screenshots/`: in a frame (`hosted-<width>x<height>.png`, the tests' heavy song playing, T3 with ARP HOLD) and opened
+  by itself, Chromium.
 - In tuttidaw's frame: the handshake (accepted from the build's channel's embedders, above, from the parent window
   only), then `init`. Edit mode: the live Felucca starts with the state (on its own if the browser lets the frame play
   sound, else with Switch on). It saves nothing in this browser, and tuttidaw's transport drives its preview

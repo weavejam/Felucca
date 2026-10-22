@@ -7,10 +7,13 @@
 //     tuttidaw" sends `commit`; renders run in a Worker (render-worker.js); mode 'render': headless, nothing else runs.
 //   - opened by itself (or not connected within a few seconds): the emulator as on its own page, a note that it is a
 //     tuttidaw plugin.
+// Either way the page fits the frame it is in, any size, never scrolled (layout.js): wide, the FM-1 upright beside the
+// Parts panel; otherwise the FM-1 alone, scaled to fit.
 import { PluginSession, embedderAllowed } from "./protocol.js";
 import { FeluccaEngine, PreviewTempo } from "./engine.js";
 import { RenderError } from "./renderer.js";
 import { BUILD, EMBEDDERS } from "./build-info.js";
+import { setupLayout, modeFor, drawingFor, PREFERRED } from "./layout.js";
 
 const embedded = window.parent !== window;
 const AUTOSAVE = [0xE5000, 0xE7000];                   // project.c OBJ_AUTOSAVE's two sectors: the music, not the rest
@@ -24,8 +27,20 @@ const host = window.feluccaHost = {
   processor: "felucca-tutti",
   wasm: "felucca.wasm",
   midi: !embedded,                                     // (in tuttidaw's frame: no Web MIDI, the manifest asks none)
+  drawing: () => drawingFor(modeFor(document.documentElement.clientWidth || innerWidth,
+                                    document.documentElement.clientHeight || innerHeight)),
   attach: (a) => { api = a; ui(); },
+  started: (n) => watch(n),                            // (opened on its own; live.load's for tuttidaw's)
 };
+let layout = null;
+// the device's messages for the page: the Parts panel's view (worklet-tutti.js tutti-view), the rest as they went
+function watch(n, also = () => false) {
+  const frames = n.port.onmessage;
+  n.port.onmessage = (e) => {
+    if (e.data.type === "tutti-view") { if (layout) layout.view(e.data.view); }
+    else if (!also(e.data)) frames(e);
+  };
+}
 
 // ------------------------------------------------------------------ the page's own parts
 const $ = (id) => document.getElementById(id);
@@ -57,8 +72,14 @@ function ui() {
     <small>Not affiliated with or endorsed by M-VAVE.</small>`;
   credit.querySelector("#tt-source").textContent = BUILD.source;   // (as text too: tuttidaw's frame opens no popups)
   foot.insertBefore(credit, foot.firstChild);
-  for (const a of foot.querySelectorAll("nav a")) if (!/^https?:/.test(a.getAttribute("href"))) a.remove();   // (the
-  $("tt-commit").addEventListener("click", () => {                                                          // emulator site's)
+  // (the emulator site's links)
+  for (const a of foot.querySelectorAll("nav a")) if (!/^https?:/.test(a.getAttribute("href"))) a.remove();
+  const mini = document.createElement("p");            // (the credits in one line: the bar's, the layouts without the panel)
+  mini.className = "tt-mini";
+  mini.innerHTML = `Felucca plugin for tuttidaw · GPL-3.0 · <a href="../credits.html" target="_blank" rel="noopener">credits,
+    licences, source</a> · not affiliated with M-VAVE`;
+  layout = setupLayout({ device: $("device"), bar, keys: document.querySelector(".keys"), footer: foot, mini, draw: api.draw });
+  $("tt-commit").addEventListener("click", () => {
     session.commit({ outputs: $("tt-stems").checked ? ["mix", "t1", "t2", "t3", "t4"] : ["mix"] });
   });
   if (standalone) becomeStandalone();
@@ -115,9 +136,7 @@ const live = {
       send({ type: "tutti-hosted" });                 // (the internal clock while hosted, whatever CLK is set to)
       tempo.reset();
       tempo.at(0);
-      const frames = n.port.onmessage;
-      n.port.onmessage = (e) => {
-        const m = e.data;
+      watch(n, (m) => {
         if (m.type === "tutti-sig") {
           if (sigBase !== null && m.sig !== sigBase) engine.changed();
           sigBase = m.sig;
@@ -125,8 +144,9 @@ const live = {
           const w = snapWait.get(m.id);
           snapWait.delete(m.id);
           if (w) w(m);
-        } else frames(e);
-      };
+        } else return false;
+        return true;
+      });
       note("");
     };
     if (node) {                                        // on already: the new state into it
@@ -259,16 +279,15 @@ engine.close = () => {                                 // (the session's end: th
 
 let alone = 0;
 if (embedded) {
-  // the host lays the frame out: the size this page wants, once connected and whenever it changes
-  const size = () => session.resize(Math.min(1600, document.documentElement.scrollWidth), Math.min(1200, document.documentElement.scrollHeight));
+  // the host lays the frame out, this page fits whatever it gets (layout.js): `resize` is only the size it prefers,
+  // the wide layout's own shape, once connected (never from the frame's size: no loop with the host's layout)
   window.addEventListener("message", (e) => {
     if (session.onWindowMessage({ data: e.data, origin: e.origin, isParent: e.source === window.parent, ports: e.ports })) {
       note("Connected to tuttidaw.");
-      size();
+      session.resize(PREFERRED.width, PREFERRED.height);
     }
   });
   session.hello();
   alone = setTimeout(() => { if (!session.port) becomeStandalone(); }, 4000);   // (not tuttidaw's frame)
-  new ResizeObserver(size).observe(document.body);
 }
 window.addEventListener("pagehide", () => session.close());

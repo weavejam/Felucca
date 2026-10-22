@@ -57,7 +57,7 @@ const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">"
 
 // ---- the plugin
 copy(wasmPath, "plugin/felucca.wasm");
-for (const f of ["tutti.js", "protocol.js", "engine.js", "renderer.js", "resample.js", "state.js", "render-worker.js", "worklet-tutti.js"])
+for (const f of ["tutti.js", "layout.js", "protocol.js", "engine.js", "renderer.js", "resample.js", "state.js", "render-worker.js", "worklet-tutti.js"])
   copy(src("web/plugin", f), `plugin/${f}`);
 copy(src("web/emu/worklet.js"), "emu/worklet.js");
 copy(src("web/emu/fonts/DotGothic16-subset.woff"), "plugin/fonts/DotGothic16-subset.woff");
