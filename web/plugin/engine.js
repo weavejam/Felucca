@@ -128,4 +128,14 @@ export class PreviewTempo {
   reset() { this.bpm = 0; }                            // (a new device: the tempo sent again)
 }
 
+// the page's line on REC's arming (felucca_plugin.c tutti_rec: bit t track t armed, the selected track in bits 8..): the
+// FM-1 records into every armed track and REC arms the selected one only, so a track selected after arming another
+// records nothing until REC is pressed on it too. "" when none is armed
+export function recText(rec) {
+  const sel = (rec >>> 8) & 3, armed = [0, 1, 2, 3].filter((t) => (rec >>> t) & 1).map((t) => `T${t + 1}`);
+  if (!armed.length) return "";
+  const line = `Recording arms ${armed.join(", ")}`;
+  return (rec >>> sel) & 1 ? line : `${line} – press REC to arm T${sel + 1}`;
+}
+
 export { StateError };

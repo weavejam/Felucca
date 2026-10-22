@@ -185,6 +185,11 @@ revision never has two different states.
   state) stays as it was, so tuttidaw's tempo never changes the state or starts a new revision. Its BPM knob
   and TAP still change the song's own BPM (saved with the state), which plays no part while hosted: they have no
   audible effect in tuttidaw.
+- **REC while hosted.** As on the FM-1, REC arms or disarms the selected track only, and every armed track records:
+  a track selected after arming another records nothing until REC is pressed on it too. The page says which tracks are
+  armed next to the device (`tutti_rec`), e.g. "Recording arms T1 – press REC to arm T2". The arming outlasts
+  tuttidaw's transport (its starts, re-seeks, loop wraps, stops): a seek runs disarmed and gives it back once there, so
+  what is played while the host plays is recorded into the armed tracks.
 - **Sessions.** A request keeps the session it came in with: what it sends after the session has ended (an `init`
   finishing late, a render's chunks, a `get-state`) is dropped, never sent into the next session, and a late `init`
   of an ended session leaves the next one uninitialised. A render still running in the Worker when the next session

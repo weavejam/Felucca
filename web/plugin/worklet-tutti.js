@@ -14,7 +14,9 @@
 //                   now on, this device and those loaded after it, whatever CLK says (felucca_plugin.c
 //                   tutti_clock_internal: a runtime override, the saved setting stays the user's)
 // and out: {type: tutti-sig, sig} when the music (project.c autosave_sig) changed; {type: tutti-view, view} with every
-// frame published, the parts as the page's Parts panel shows them (felucca_plugin.c tutti_view, VIEW_BYTES).
+// frame published, the parts as the page's Parts panel shows them (felucca_plugin.c tutti_view, VIEW_BYTES); {type:
+// tutti-rec, rec} when REC's arming or the selected track changed (felucca_plugin.c tutti_rec: bit t track t armed, the
+// selected track in bits 8..).
 import { storeSectors, restoreSectors } from "../emu/worklet.js";
 
 const Base = globalThis.FeluccaProcessor;
@@ -31,6 +33,7 @@ class FeluccaTutti extends Base {
     this.at = null;                                    // playing: {gen, frame, pos} (pos at that frame)
     this.seeking = null;                               // a seek on its way: {gen, frame, pos} (pos at that frame)
     this.sentSig = null;
+    this.sentRec = null;
     this.hosted = false;
   }
 
@@ -77,7 +80,7 @@ class FeluccaTutti extends Base {
       this.sentLeds = "";
       this.queue = [];
       this.play = this.at = this.seeking = null;
-      this.sentSig = null;
+      this.sentSig = this.sentRec = null;
       this.port.postMessage({ type: "ready", rate: ex.web_sample_rate() });
     } catch (err) {
       this.port.postMessage({ type: "error", message: String(err && err.message || err) });
@@ -127,6 +130,11 @@ class FeluccaTutti extends Base {
     if (sig !== this.sentSig) {
       this.sentSig = sig;
       this.port.postMessage({ type: "tutti-sig", sig });
+    }
+    const rec = this.ex.tutti_rec() >>> 0;
+    if (rec !== this.sentRec) {
+      this.sentRec = rec;
+      this.port.postMessage({ type: "tutti-rec", rec });
     }
   }
 }

@@ -10,7 +10,7 @@
 // Either way the page fits the frame it is in, any size, never scrolled (layout.js): wide, the FM-1 upright beside the
 // Parts panel; otherwise the FM-1 alone, scaled to fit.
 import { PluginSession, embedderAllowed } from "./protocol.js";
-import { FeluccaEngine, PreviewTempo } from "./engine.js";
+import { FeluccaEngine, PreviewTempo, recText } from "./engine.js";
 import { RenderError } from "./renderer.js";
 import { BUILD, EMBEDDERS } from "./build-info.js";
 import { setupLayout, modeFor, drawingFor, PREFERRED } from "./layout.js";
@@ -33,11 +33,14 @@ const host = window.feluccaHost = {
   started: (n) => watch(n),                            // (opened on its own; live.load's for tuttidaw's)
 };
 let layout = null;
-// the device's messages for the page: the Parts panel's view (worklet-tutti.js tutti-view), the rest as they went
+// the device's messages for the page: the Parts panel's view (worklet-tutti.js tutti-view), REC's arming (tutti-rec),
+// the rest as they went
 function watch(n, also = () => false) {
   const frames = n.port.onmessage;
+  recShow(0);                                          // (a new device: its own arming to come)
   n.port.onmessage = (e) => {
     if (e.data.type === "tutti-view") { if (layout) layout.view(e.data.view); }
+    else if (e.data.type === "tutti-rec") recShow(e.data.rec);
     else if (!also(e.data)) frames(e);
   };
 }
@@ -54,9 +57,12 @@ function ui() {
       .tutti button { font: inherit; padding: 6px 14px; background: #1d1d1f; color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
       .tutti button:disabled { opacity: .45; cursor: default; }
       .tutti progress { width: 120px; }
+      .tutti .rec { color: #e5484d; font-weight: 600; }
+      .tutti .rec::before { content: "● "; }
       .tutti .note { font-size: 12px; color: var(--dim); text-align: center; flex-basis: 100%; }
       .tutti [hidden] { display: none !important; }
     </style>
+    <span class="rec" id="tt-rec" role="status" hidden></span>
     <span id="tt-connected" hidden>
       <button id="tt-commit" type="button" title="Render this Felucca song into tuttidaw at tuttidaw's tempo">Render to tuttidaw</button>
       <label><input type="checkbox" id="tt-stems"> T1–T4 stems too</label>
@@ -89,6 +95,12 @@ function ui() {
   }
 }
 const note = (t) => { if ($("tt-note")) $("tt-note").textContent = t; };
+function recShow(rec) {
+  const el = $("tt-rec"), t = recText(rec);
+  if (!el) return;
+  el.textContent = t;
+  el.hidden = !t;
+}
 
 function becomeStandalone() {
   standalone = true;
