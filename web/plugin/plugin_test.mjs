@@ -14,7 +14,7 @@ import { storeSectors } from "../emu/worklet.js";
 import { render, planRender, midiEvents, device, frameAt, RenderError, NATIVE_RATE, MIN_BPM, MAX_BPM } from "./renderer.js";
 import { packState, unpackState, stateEquals, STATE_VERSION } from "./state.js";
 import { PluginSession, embedderAllowed, CHANNELS, PROTOCOL, INITIAL_CREDITS } from "./protocol.js";
-import { FeluccaEngine, PreviewTempo } from "./engine.js";
+import { FeluccaEngine, PreviewTempo, recText } from "./engine.js";
 import { Resampler } from "./resample.js";
 
 const wasmPath = process.argv[2] || "build/plugin-wasm/felucca.wasm", emuPath = process.argv[3];
@@ -288,6 +288,57 @@ if (!FAST) {
   const z = b.tutti_seek_run(B, 0);
   b.tutti_seek(0, 0);
   check("seek: to 0 done at once; stopped: nothing to run", z === 0 && b.tutti_seek_run(B, Q) === 0);
+}
+
+// ---- REC's arming on the live page: what the page shows (tutti_rec), kept over the host's transport, and recorded into
+{
+  const B_REC = 11, EN_ALGO = 1;                       // (panel.c: the buttons' labels, the encoders)
+  const { exports: ex } = await WebAssembly.instantiate(mod, {});
+  ex._initialize(); ex.web_nor_erase(); ex.tutti_boot(0);
+  ex.tutti_clock_internal(1);                          // (worklet-tutti.js: tutti-hosted)
+  ex.tutti_tempo(120);
+  const run = (ms) => { for (let k = 0; k < ms * 44.1; k += 128) ex.web_render(128); };
+  const rec = () => ex.tutti_rec() >>> 0;
+  const tap = () => { ex.web_buttons(1 << B_REC); run(100); ex.web_buttons(0); run(1000); };   // (apart: not a double tap)
+  run(1000);
+  for (let t = 0; t < 4; t++) ex.tutti_test_clear(t);
+  const r0 = rec();
+  tap();                                               // T1 armed (and its transport started, as REC from stop does)
+  const r1 = rec();
+  ex.web_enc(EN_ALGO, 1); run(100);                    // T2 selected: T1 stays armed, T2 is not
+  const r2 = rec(), t2 = recText(r2);
+  tap();                                               // T2 armed too
+  const r3 = rec();
+  ex.web_enc(EN_ALGO, -1); run(100);
+  tap();                                               // T1 disarmed: T2 alone
+  ex.web_enc(EN_ALGO, 1); run(100);
+  const r4 = rec();
+  check(`REC's arming: none ${r0.toString(16)}, REC on T1 ${r1.toString(16)}, T2 selected ${r2.toString(16)} ("${t2}")`,
+        r0 === 0 && r1 === 0x001 && r2 === 0x101 && t2 === "Recording arms T1 – press REC to arm T2" && recText(r0) === "");
+  check(`REC's arming: REC on T2 too ${r3.toString(16)} ("${recText(r3)}"), then off on T1 ${r4.toString(16)} ("${recText(r4)}")`,
+        r3 === 0x103 && recText(r3) === "Recording arms T1, T2" && r4 === 0x102 && recText(r4) === "Recording arms T2");
+  // the host's transport: a start, a seek (a drift), a loop's wrap while a seek is still on its way, a stop
+  ex.tutti_seek(1, 0); ex.tutti_seek_run(1024, 0);
+  const a = rec();
+  ex.tutti_seek(1, 44100 * 60);
+  const during = rec();
+  ex.tutti_seek_run(16, 0);
+  ex.tutti_seek(1, 44100 * 2);                         // (the loop wrapped before the seek got there)
+  while (ex.tutti_seek_run(1024, 4)) ;
+  const b = rec();
+  ex.tutti_seek(0, 0);
+  const c = rec();
+  ex.tutti_seek(1, 0); ex.tutti_seek_run(1024, 0);
+  check(`host transport: start ${a.toString(16)}, mid-seek ${during.toString(16)}, wrapped ${b.toString(16)}, stopped ${c.toString(16)}: T2 stays armed`,
+        a === 0x102 && during === 0x102 && b === 0x102 && c === 0x102 && rec() === 0x102);
+  // a note played while armed and the host plays: recorded into T2 (MIDI channel 2 plays T2), nothing into the others
+  run(300);
+  ex.web_midi(0x91, 64, 100); run(200);
+  ex.web_midi(0x81, 64, 0); run(300);
+  const view = new Uint8Array(ex.memory.buffer, ex.tutti_view(), 4 * 64 + 8);
+  const notes = (t) => view.subarray(t * 64 + 36, t * 64 + 44).reduce((n, x) => n + x.toString(2).replace(/0/g, "").length, 0);
+  check(`armed T2, the host playing: a note on its channel recorded into it (steps with notes: ${[0, 1, 2, 3].map(notes).join(" ")})`,
+        notes(1) >= 1 && notes(0) + notes(2) + notes(3) === 0);
 }
 
 // ---- 48 kHz: the resampler against a sine

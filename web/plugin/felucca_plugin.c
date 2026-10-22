@@ -11,7 +11,8 @@
  *     dry mix and sends (fx.c tutti_mx) for its stem;
  *   - a part's stem from those (tutti_stem_render, in an instance of its own: its own buses, see README);
  *   - the state: the music written as the autosave (project.c) and the flash's storage sectors read by the page;
- *   - for the live page: where the music has changed (tutti_sig), the transport placed at a frame (tutti_seek).
+ *   - for the live page: where the music has changed (tutti_sig), the transport placed at a frame (tutti_seek, REC's
+ *     arming kept), which tracks REC has armed (tutti_rec).
  *   web/plugin/build.sh  ->  build/plugin-site/plugin/felucca.wasm */
 #define FELUCCA_TUTTI 1
 #include "../emu/felucca_web.c"
@@ -301,13 +302,28 @@ EXPORT void tutti_stem_render(uint32_t nblocks, int32_t mg)
  * tutti_seek only starts it; tutti_seek_run runs it a bounded number of blocks per call (the worklet: per render
  * quantum, silent until it is done), so a seek minutes into a song never stalls the audio thread */
 static uint32_t tt_seek, tt_seeking;               /* blocks still to run; a seek is on */
+/* REC's arming (song.rec) is the user's and outlasts the host's transport (its starts, re-seeks, loop wraps): a seek runs
+ * disarmed (its silent run up to the place records nothing, an ARP HOLD's notes neither) and gives it back once there,
+ * or when stopped or moved again first. While SONG's chain runs it goes to chain.rec (chain_start took song.rec there,
+ * song.rec stays 0 meanwhile as on the FM-1; chain_stop puts it back) */
+static uint8_t tt_rec;
+static void tt_rec_back(void)
+{
+    if (chain.running)
+        chain.rec = tt_rec;
+    else
+        song.rec = tt_rec;
+}
 EXPORT void tutti_seek(uint32_t play, uint32_t frames)
 {
     seq_stop();
     transport_req = 0;
+    if (tt_seeking)
+        song.rec = tt_rec;                            /* (cut short: seq_stop's chain_stop gave back the seek's 0) */
     tt_seek = tt_seeking = 0;
     if (!play)
         return;
+    tt_rec = song.rec;
     song.rec = 0;
     seq_start();
     tt_seek = frames / CTL;
@@ -326,6 +342,7 @@ EXPORT uint32_t tutti_seek_run(uint32_t max, uint32_t more)
     if (tt_seek)
         return tt_seek;
     tt_seeking = 0;
+    tt_rec_back();
     for (i = 0; i < NTRK; i++)
         for (k = 0; k < NVOICE; k++)
             if (trk[i].v[k].active)
@@ -382,6 +399,13 @@ EXPORT void *tutti_view(void)
     tt_view.sel = song.sel;
     tt_view.playing = song.playing ? 1u : 0u;
     return &tt_view;
+}
+
+/* REC's arming, for the page (worklet-tutti.js tutti-rec): bit t: track t armed (song.rec; the FM-1 records into every
+ * armed track, REC arms or disarms the selected one only), bits 8..: the selected track (song.sel) */
+EXPORT uint32_t tutti_rec(void)
+{
+    return (uint32_t)(tt_seeking ? tt_rec : song.rec) | (uint32_t)song.sel << 8;
 }
 
 /* for the tests (web/plugin/plugin_test.mjs): track t's pattern emptied (the heavy song, web_test_heavy, without it) */
