@@ -21,6 +21,10 @@ export const OUTPUTS = [
   { id: "t4", name: "T4", channels: 2 },
 ];
 export const MAX_SECONDS = 600, MAX_TAIL_MS = 10000;
+// every render plays from beat 0 (no seek): the frames before fromBeat are work too (protocol 6 counts the pre-roll in
+// a render's length). At most the budget of a result plus its longest tail, at the render's tempo: a render's whole
+// run stays within 1210 s of audio
+export const MAX_PREROLL_SECONDS = MAX_SECONDS + MAX_TAIL_MS / 1000;
 export const MIN_BPM = 40, MAX_BPM = 240;              // the firmware's tempo range (felucca_plugin.c tutti_bpm_min/max)
 export const BLOCK = 32;                               // the firmware's control block (felucca_plugin.c tutti_block_frames)
 
@@ -100,17 +104,22 @@ export function planRender(req, { tempoMap = "constant" } = {}) {
   // the tempo at fromBeat: the range rendered at that tempo throughout, its length that tempo's (the host warps it)
   const own = (b) => Math.round(((b * 60) / bpm) * sr);  // the plugin's timeline: constant bpm from beat 0
   const body = approx ? own(toBeat) - own(fromBeat) : frameAt(pts, toBeat, sr) - frameAt(pts, fromBeat, sr);
-  const frames = body + tail;
+  const frames = body + tail, skip = own(fromBeat), stop = Math.round(((toBeat * 60) / bpm) * NATIVE_RATE);
+  // the device counts frames from beat 0 in uint32 (felucca_plugin.c tutti_start's stop, tutti_event's frames, ~0u: none)
+  if (!(Math.round((((toBeat * 60) / bpm) + MAX_TAIL_MS / 1000) * NATIVE_RATE) < 0xFFFFFFFF))
+    throw new RenderError("bad-request", "toBeat past what the device can count (2^32 frames from beat 0)");
   if (frames <= 0) throw new RenderError("bad-request", "an empty range");
   if (frames > MAX_SECONDS * sr) throw new RenderError("too-large", `${frames} frames: at most ${MAX_SECONDS} s`);
-  return { bpm, rate: sr, outputs: outputs.slice(), frames, skip: own(fromBeat), body,
-           stop: Math.round(((toBeat * 60) / bpm) * NATIVE_RATE),
+  if (skip > MAX_PREROLL_SECONDS * sr)
+    throw new RenderError("too-large", `fromBeat ${fromBeat}: the pre-roll from beat 0 at most ${MAX_PREROLL_SECONDS} s`);
+  return { bpm, rate: sr, outputs: outputs.slice(), frames, skip, body, stop,
            events: req.input ? midiEvents(req.input, bpm, toBeat) : null };
 }
 
 // use B: the notes (released at min(their end, toBeat)), CC and pitch bend, at 44.1 kHz frames of the plugin's
-// timeline, in time order; at one frame: controllers, then note-offs, then note-ons. A note's off comes a block after
-// its on at least (protocol 7b: a note of length <= 0 still gets its off after its on; the firmware takes MIDI per
+// timeline, in time order; at one frame: controllers, then note-offs, then note-ons; a sustain pedal let go at toBeat.
+// A note's off comes a block after its on at least (protocol 7b: a note of length <= 0, negative too, still gets its
+// off after its on; the firmware takes MIDI per
 // block, so an off in the on's block would let it go before it sounded). Moved that way, an off never goes past the
 // next on of its pitch on its channel: at that frame at the latest, before the on (it would cut that note)
 export function midiEvents(input, bpm, toBeat) {
@@ -123,9 +132,9 @@ export function midiEvents(input, bpm, toBeat) {
     throw new RenderError("too-large", "input: at most 30000 events");
   const ons = new Map();                               // channel * 128 + pitch -> the on frames, sorted
   for (const n of input.notes) {
-    if (!n || !finite(n.beat) || !finite(n.lengthBeats) || n.lengthBeats < 0 || !int(n.pitch, 0, 127) ||
+    if (!n || !finite(n.beat) || !finite(n.lengthBeats) || !int(n.pitch, 0, 127) ||
         !int(n.velocity, 1, 127) || !ch(n.channel))
-      throw new RenderError("bad-request", "input.notes: beat, lengthBeats >= 0, pitch 0..127, velocity 1..127, channel 0..15");
+      throw new RenderError("bad-request", "input.notes: beat, lengthBeats, pitch 0..127, velocity 1..127, channel 0..15");
     if (n.beat >= toBeat) continue;
     const k = n.channel * 128 + n.pitch;
     if (!ons.has(k)) ons.set(k, []);
@@ -140,7 +149,7 @@ export function midiEvents(input, bpm, toBeat) {
   };
   for (const n of input.notes) {
     if (n.beat >= toBeat) continue;
-    const on = f(n.beat), end = f(Math.min(n.beat + n.lengthBeats, toBeat));
+    const on = f(n.beat), end = f(Math.min(n.beat + Math.max(0, n.lengthBeats), toBeat));   // (< 0: as 0)
     const off = Math.max(end, Math.min(on + BLOCK, nextOn(n.channel * 128 + n.pitch, on)));
     ev.push({ frame: on, order: 2, status: 0x90 | n.channel, d1: n.pitch, d2: n.velocity });
     ev.push({ frame: off, order: 1, status: 0x80 | n.channel, d1: n.pitch, d2: 0 });
@@ -150,6 +159,12 @@ export function midiEvents(input, bpm, toBeat) {
       throw new RenderError("bad-request", "input.cc: beat, channel 0..15, cc 0..127, value 0..127");
     if (c.beat < toBeat) ev.push({ frame: f(c.beat), order: 0, status: 0xB0 | c.channel, d1: c.cc, d2: c.value });
   }
+  // the range ends at toBeat: a channel's sustain pedal let go there (its later pedal-up is past it, dropped), before
+  // the notes' offs at that frame, so nothing is held into the tail (midi_control.c: an off with the pedal down waits
+  // for the pedal); their releases and the FX tails ring out as they would (no sound-off)
+  const pedals = new Set(input.cc.filter((c) => c.cc === 64 && c.beat < toBeat).map((c) => c.channel));
+  for (const c of [...pedals].sort((a, b) => a - b))
+    ev.push({ frame: f(toBeat), order: 0, status: 0xB0 | c, d1: 64, d2: 0 });
   for (const p of input.pitchBend) {
     if (!p || !finite(p.beat) || !ch(p.channel) || !int(p.value, -8192, 8191))
       throw new RenderError("bad-request", "input.pitchBend: beat, channel 0..15, value -8192..8191");

@@ -738,5 +738,151 @@ const collect = (h, renderId) => {                    // the chunks of a render,
         s2.stateRevision === 2 && engine.revision === 3 && engine.dirty && stateEquals(engine.states.get(2).buf, packState(C)));
 }
 
+// ================================================================== review fixes
+// ---- a revision is one state: its snapshot made once, whoever asks for it while it is made
+{
+  const snaps = [], rendered = [];
+  const live = { load: async () => {}, context() {}, transport() {}, close() {},
+                 snapshot: () => new Promise((res) => snaps.push(res)) };
+  const engine = new FeluccaEngine({ render: (sectors) => { rendered.push(sectors); return { frames: 1, outputs: ["mix"] }; }, live });
+  const A = { 0xE5000: new Uint8Array(4096).fill(4) }, B = { 0xE5000: new Uint8Array(4096).fill(5) };
+  await engine.init({ context: ctxOf(120), state: null, stateVersion: null, mode: "edit" });
+  engine.changed();
+  const g1 = engine.getState();
+  await sleep(0);
+  const g2 = engine.getState();                       // (a second get-state while the first is made)
+  const r = engine.render(req({ stateRevision: 2 }), { cancelled: () => false });
+  await sleep(0);
+  const asked = snaps.length;
+  snaps.shift()(A);                                    // the device as it was asked
+  while (snaps.length) snaps.shift()(B);               // (an edit meanwhile, its change not in yet: another state)
+  const [s1, s2] = await Promise.all([g1, g2]);
+  await r;
+  check(`one snapshot per revision: ${asked} for get-state, get-state, render of revision 2; one state, the same bytes`,
+        asked === 1 && s1.stateRevision === 2 && s2.stateRevision === 2 && stateEquals(s1.state, s2.state) &&
+        stateEquals(s1.state, packState(A)) && rendered.length === 1 && rendered[0] === engine.states.get(2).sectors);
+  // a render of the revision whose snapshot is on its way, a change since: that snapshot, not an unknown revision
+  engine.changed();
+  const g3 = engine.getState();
+  await sleep(0);
+  engine.changed();
+  const r3 = engine.render(req({ stateRevision: 3 }), { cancelled: () => false }).then(() => "rendered", (e) => e.code);
+  await sleep(0);
+  const asked3 = snaps.length;
+  while (snaps.length) snaps.shift()(B);
+  const s3 = await g3;
+  check(`a render of a revision still being made (now ${engine.revision}): ${await r3}, its one snapshot`,
+        asked3 === 1 && (await r3) === "rendered" && s3.stateRevision === 3 && rendered.at(-1) === engine.states.get(3).sectors);
+}
+
+// ---- use B: the sustain pedal down over toBeat (its pedal-up past it) lets go at toBeat: nothing held into the tail
+{
+  const n = (beat, lengthBeats) => ({ beat, lengthBeats, pitch: 60, velocity: 100, channel: 0 });
+  const ped = (beat, value) => ({ beat, channel: 0, cc: 64, value });
+  const inp = (cc) => ({ notes: [n(1, 10)], cc, pitchBend: [], preRollBeats: 0 });
+  const end = Math.round(4 * 0.5 * 44100);
+  const k = midiEvents(inp([ped(0.5, 127), ped(6, 0)]), 120, 4).map((e) => `${e.status.toString(16)}:${e.d1}:${e.d2}@${e.frame}`);
+  check(`sustain: the pedal up at toBeat, before the note's off there (${k.slice(-2).join(" ")})`,
+        k.slice(-2).join() === [`b0:64:0@${end}`, `80:60:0@${end}`].join());
+  const one = async (cc) => (await renderAll({}, req({ input: inp(cc), toBeat: 4, tailMs: 3000, outputs: ["t1"] }))).out.t1[0];
+  const free = await one([]), held = await one([ped(0.5, 127), ped(6, 0)]);
+  const tail = (x) => rms(x.subarray(end + 44100));
+  check(`sustain: the tail past toBeat as without the pedal (rms ${tail(held).toExponential(2)}, no pedal ${tail(free).toExponential(2)})`,
+        rms(free.subarray(end - 22050, end)) > 1e-3 && tail(held) <= tail(free) * 1.05 + 1e-6);
+}
+
+// ---- hosted playback: the internal clock whatever CLK says (a runtime override), the saved CLK the user's
+{
+  const G_CLOCK = 2;                                   // (core.h)
+  const boot = async (sectors) => {
+    const { exports: ex } = await WebAssembly.instantiate(mod, {});
+    ex._initialize(); ex.web_nor_erase();
+    const nor = new Uint8Array(ex.memory.buffer, ex.web_nor(), ex.web_nor_size());
+    for (const [o, v] of Object.entries(sectors)) nor.set(v, +o);
+    ex.tutti_boot(0);
+    return ex;
+  };
+  const clk = (ex) => new Int16Array(ex.memory.buffer, ex.tutti_song_g(), 64)[G_CLOCK];
+  const ext = await makeState((ex) => {                // a song saved with CLK USB
+    for (let k = 0; k < 1000 * 44.1; k += 128) ex.web_render(128);
+    ex.web_test_heavy();
+    new Int16Array(ex.memory.buffer, ex.tutti_song_g(), 64)[G_CLOCK] = 1;
+    for (let k = 0; k < 100 * 44.1; k += 128) ex.web_render(128);
+  });
+  const ex = await boot(ext);
+  const can = typeof ex.tutti_clock_internal === "function";
+  if (can) ex.tutti_clock_internal(1);                 // (worklet-tutti.js: tutti-hosted)
+  ex.tutti_tempo(120);
+  for (let k = 0; k < 1000 * 44.1; k += 128) ex.web_render(128);
+  ex.tutti_seek(1, 0);
+  ex.tutti_seek_run(1024, 0);
+  const steps = () => [0, 1, 2, 3].map((t) => ex.tutti_seq_idx(t)).join();
+  for (let k = 0; k < 250 * 44.1; k += 128) ex.web_render(128);
+  const steps0 = steps();
+  for (let k = 0; k < 500 * 44.1; k += 128) ex.web_render(128);
+  const steps1 = steps();                              // (a quarter at 120 BPM later: 4 steps on)
+  ex.tutti_snapshot();
+  const reloaded = clk(await boot(storeSectors(new Uint8Array(ex.memory.buffer, ex.web_nor(), ex.web_nor_size()))));
+  check(`hosted preview of a song saved with CLK USB: the internal clock plays it (steps ${steps0} -> ${steps1})`, can && steps0 !== steps1);
+  check(`hosted preview: CLK stays the user's (${clk(ex)}), in the state it saves too (${reloaded})`, clk(ex) === 1 && reloaded === 1);
+  const a = (await renderAll(ext, req({ toBeat: 8 }))).out.mix[0];
+  check(`a render of a CLK USB song: the internal clock at the host's tempo (peak ${peak(a).toFixed(3)})`, peak(a) > 0.05);
+}
+
+// ---- use B: a negative length (protocol 7b: <= 0) is a zero-length note: its on, then its off a block after
+{
+  const at = (beat) => Math.round(beat * 0.5 * 44100);
+  let k;
+  try {
+    k = midiEvents({ notes: [{ beat: 1, lengthBeats: -0.75, pitch: 60, velocity: 100, channel: 0 }], cc: [], pitchBend: [], preRollBeats: 0 }, 120, 8)
+      .map((e) => `${e.status >> 4 === 9 ? "on" : "off"}@${e.frame}`).join(" ");
+  } catch (err) { k = `${err.code}`; }
+  check(`a note of length -0.75: accepted, its on then its off (${k})`, k === `on@${at(1)} off@${at(1) + 32}`);
+}
+
+// ---- the range's limits: frames the device can count, the pre-roll from beat 0, the credits a render holds
+{
+  const code = (o) => { try { planRender(req(o)); return "ok"; } catch (err) { return err.code; } };
+  const far = code({ fromBeat: 1e12, toBeat: 1e12 + 4 });
+  const pre = code({ fromBeat: 1300, toBeat: 1304 });  // 650 s of pre-roll at 120 BPM
+  const near = code({ fromBeat: 1218, toBeat: 1222 }); // 609 s
+  check(`frames past 2^32 from beat 0: ${far}; a pre-roll over 610 s: ${pre}; 609 s: ${near}`,
+        far === "bad-request" && pre === "too-large" && near === "ok");
+  const h = harness();
+  h.connect();
+  h.send({ type: "init", id: "i", sampleRate: 44100, context: ctxOf(120), state: null, stateVersion: null, mode: "render" });
+  await h.reply("i");
+  h.send({ type: "render", id: "pr", ...req({ renderId: "pr", fromBeat: 1300, toBeat: 1304 }) });
+  const pr = await h.reply("pr");
+  h.send({ type: "render", id: "cr", ...req({ renderId: "cr", toBeat: 800, outputs: ALL }) });
+  await sleep(200);
+  for (let i = 0; i < 3; i++) h.send({ type: "render-credit", renderId: "cr", chunks: 1e6 });
+  await sleep(100);
+  const credits = h.session.render ? h.session.render.credits : NaN;
+  h.send({ type: "cancel", renderId: "cr" });
+  const cr = await h.reply("cr");
+  check(`a render with 650 s of pre-roll: ${pr.code}; credits granted 3 x 1e6: ${credits} held (at most 600 s x 8 outputs)`,
+        pr.code === "too-large" && credits > 0 && credits <= 4800 && cr.code === "cancelled");
+  h.close();
+}
+
+// ---- the port's messageerror ends the session: its render cancelled, the port let go, a new connect accepted
+{
+  const h = harness();
+  h.connect();
+  h.send({ type: "init", id: "i", sampleRate: 44100, context: ctxOf(120), state: null, stateVersion: null, mode: "render" });
+  await h.reply("i");
+  h.send({ type: "render", id: "me", ...req({ renderId: "me", toBeat: 400 }) });
+  await sleep(300);
+  const port = h.session.port, r = h.session.render;
+  const has = typeof port.onmessageerror === "function";
+  if (has) port.onmessageerror(new Event("messageerror"));
+  await sleep(100);
+  check("port messageerror: the session closed, its render cancelled, the port's handlers off, a new connect accepted",
+        has && h.session.state === "closed" && !!r && r.cancel === true && h.session.render === null && h.session.port === null &&
+        !port.onmessage && !port.onmessageerror && h.connect({ generation: 2 }) === 1);
+  h.close();
+}
+
 console.log(fails ? `plugin: ${fails} FAILED` : "plugin: all ok");
 process.exit(fails ? 1 : 0);

@@ -33,8 +33,12 @@
 static uint64_t tutti_beat_q32;  /* a beat (a quarter) in samples, Q32, from the host; 0 = G_BPM as always */
 static int16_t tutti_bpm_shown;  /* the host's tempo rounded, for the screen (G_BPM stays the song's own) */
 #define HEAD_BPM (tutti_beat_q32 ? tutti_bpm_shown : song.g[G_BPM])   /* the tempo the screen shows */
+static uint8_t tutti_clock_int;  /* hosted playback: the internal clock at the host's tempo whatever CLK says; a runtime
+                                  * override (song.g[G_CLOCK], the setting the state saves, stays the user's) */
+#define CLOCK_MODE() (tutti_clock_int ? 0 : song.g[G_CLOCK])   /* the clock that runs: 0 internal, else external */
 #else
 #define HEAD_BPM song.g[G_BPM]
+#define CLOCK_MODE() (song.g[G_CLOCK])
 #endif
 #define C1_NP (FELUCCA_CPU2 ? NPART : 1)   /* the copies of the state a part's render writes that parts shared before the
                                             * second core (mod.c, voice.c SPREAD, eng_formant.c): one each with two cores,

@@ -112,6 +112,7 @@ const live = {
       node = n;
       ac = c;
       liveOn = true;
+      send({ type: "tutti-hosted" });                 // (the internal clock while hosted, whatever CLK is set to)
       tempo.reset();
       tempo.at(0);
       const frames = n.port.onmessage;
@@ -176,23 +177,34 @@ const live = {
 
 // ------------------------------------------------------------------ renders in a Worker
 // one render at a time in it: one still running when another starts (its session ended meanwhile: it is let go, not
-// waited for) goes with its worker, and the new one gets a fresh worker
+// waited for) goes with its worker, and the new one gets a fresh worker. The session's end (close, the port's
+// messageerror) or a message between it and the page that cannot be read (messageerror, either way): the worker's work
+// ended with it (stopWorker)
 let worker = null, workerBusy = null;
+function stopWorker(err = new RenderError("cancelled", "the session ended")) {
+  if (worker && workerBusy) {
+    worker.terminate();
+    workerBusy(err);
+    worker = null;
+  }
+}
 function renderInWorker(sectors, req, sink) {
   // (an ended session's render, its state made late: it never touches the worker, the next session's render may be in it)
   if (sink.cancelled()) return Promise.reject(new RenderError("cancelled", "cancelled"));
-  if (worker && workerBusy) {
-    worker.terminate();
-    workerBusy(new RenderError("cancelled", "the session ended"));
-    worker = null;
-  }
+  stopWorker();
   worker = worker || new Worker(new URL("./render-worker.js", import.meta.url), { type: "module" });
   const w = worker;
   $("tt-render").hidden = false;
   $("tt-progress").value = 0;
   return new Promise((resolve, reject) => {
     const poll = setInterval(() => { if (sink.cancelled()) w.postMessage({ type: "cancel" }); }, 50);
-    const end = () => { clearInterval(poll); w.onmessage = null; workerBusy = null; $("tt-render").hidden = true; };
+    const end = () => { clearInterval(poll); w.onmessage = w.onmessageerror = null; workerBusy = null; $("tt-render").hidden = true; };
+    const unreadable = () => {                         // (the session ends: its teardown stops this worker, see close)
+      log("tutti: a render worker message could not be read");
+      session.close();
+      stopWorker(new RenderError("internal", "a render worker message could not be read"));
+    };
+    w.onmessageerror = unreadable;
     workerBusy = (err) => { end(); reject(err); };
     w.onmessage = async (e) => {
       const m = e.data;
@@ -208,6 +220,7 @@ function renderInWorker(sectors, req, sink) {
         sink.progress(m.fraction);
       } else if (m.type === "done") { end(); resolve(m.result); }
       else if (m.type === "error") { end(); reject(new RenderError(m.code, m.message)); }
+      else if (m.type === "messageerror") unreadable();
     };
     w.onerror = (e) => { end(); worker = null; w.terminate(); reject(new RenderError("internal", e.message || "the render worker failed")); };
     w.postMessage({ type: "render", wasmUrl: WASM_URL, sectors, req });
@@ -237,6 +250,11 @@ engine.init = async (args) => {
     $("tt-connected").hidden = false;
   }
   return initOrig(args);
+};
+
+engine.close = () => {                                 // (the session's end: the live device stopped, a render's worker too)
+  stopWorker();
+  live.close();
 };
 
 let alone = 0;

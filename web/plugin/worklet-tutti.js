@@ -10,6 +10,9 @@
 //                   of over 20 ms moves it (re-seek); not playing: stop. A seek runs the sequencer up to `pos` at most
 //                   SEEK_BLOCKS blocks per render quantum (felucca_plugin.c tutti_seek_run), silent until it is there
 //   tutti-snapshot  {id}: the music written as the autosave, the storage sectors back {type: tutti-snapshot, id, sectors}
+//   tutti-hosted    the page is tuttidaw's (not the emulator on its own): the internal clock at the host's tempo from
+//                   now on, this device and those loaded after it, whatever CLK says (felucca_plugin.c
+//                   tutti_clock_internal: a runtime override, the saved setting stays the user's)
 // and out: {type: tutti-sig, sig} when the music (project.c autosave_sig) changed.
 import { storeSectors, restoreSectors } from "../emu/worklet.js";
 
@@ -26,6 +29,7 @@ class FeluccaTutti extends Base {
     this.at = null;                                    // playing: {gen, frame, pos} (pos at that frame)
     this.seeking = null;                               // a seek on its way: {gen, frame, pos} (pos at that frame)
     this.sentSig = null;
+    this.hosted = false;
   }
 
   async onMessage(m) {
@@ -33,6 +37,11 @@ class FeluccaTutti extends Base {
     if (m.type === "tutti-tempo") {
       this.bpm = m.bpm;
       if (this.ex) this.ex.tutti_tempo(m.bpm);         // (out of Felucca's range: refused, the tempo stays)
+      return;
+    }
+    if (m.type === "tutti-hosted") {
+      this.hosted = true;
+      if (this.ex) this.ex.tutti_clock_internal(1);
       return;
     }
     const ex = this.ex;
@@ -58,6 +67,7 @@ class FeluccaTutti extends Base {
       restoreSectors(new Uint8Array(ex.memory.buffer, ex.web_nor(), ex.web_nor_size()), m.sectors);
       ex.web_master(m.master ?? 700);
       ex.tutti_boot(0);
+      if (this.hosted) ex.tutti_clock_internal(1);
       if (this.bpm) ex.tutti_tempo(this.bpm);
       this.ex = ex;
       this.sentWrites = ex.web_flash_writes_count();
