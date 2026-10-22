@@ -34,9 +34,9 @@ export function packState(sectors) {
 // -> {offset: Uint8Array(4096)} (copies: the input is never changed); StateError when it is not one
 export function unpackState(buf, version = STATE_VERSION) {
   if (version < STATE_READS[0] || version > STATE_READS[1]) throw new StateError(`state version ${version} not read by this plugin`);
-  if (!(buf instanceof ArrayBuffer) || buf.byteLength < 12) throw new StateError("not an FM-1 state");
+  if (!(buf instanceof ArrayBuffer) || buf.byteLength < 12) throw new StateError("not a Felucca state");
   const dv = new DataView(buf), u8 = new Uint8Array(buf);
-  if (dv.getUint32(0, true) !== MAGIC) throw new StateError("not an FM-1 state");
+  if (dv.getUint32(0, true) !== MAGIC) throw new StateError("not a Felucca state");
   if (dv.getUint32(4, true) !== version) throw new StateError("state version differs from its header");
   const n = dv.getUint32(8, true);
   if (buf.byteLength !== 12 + n * (4 + SECTOR)) throw new StateError("state truncated or padded");

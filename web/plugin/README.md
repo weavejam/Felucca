@@ -1,9 +1,10 @@
-# FM-1 for tuttidaw (`web/plugin/`)
+# Felucca for tuttidaw (`web/plugin/`)
 
 A [tuttidaw](https://tuttidaw.com) plugin (protocol `tutti-plugin/0`, an "L0 offline plugin") built from Felucca:
 the browser emulator (`web/emu/`, the whole firmware in WebAssembly) as the plugin's own UI, plus a headless
-renderer that renders the FM-1's song (or MIDI from tuttidaw) offline into a mix and four part stems, at tuttidaw's
-tempo. GPL-3.0-only like the rest of Felucca. Not affiliated with or endorsed by M-VAVE.
+renderer that renders Felucca's song (or MIDI from tuttidaw) offline into a mix and four part stems, at tuttidaw's
+tempo. The plugin is named for the firmware: the FM-1 is the M-VAVE hardware Felucca runs on (another FM-1 firmware
+would be a plugin of its own). GPL-3.0-only like the rest of Felucca. Not affiliated with or endorsed by M-VAVE.
 
 ## Build, run, test
 
@@ -25,11 +26,12 @@ pages may embed the build, and `site.mjs` writes that one list into both the pag
 
 | Channel | Embedders | Out |
 | --- | --- | --- |
-| `production` | exactly `https://tuttidaw.com`, `https://www.tuttidaw.com` | `build/plugin-site/` |
-| `preview` | those and `http://localhost:<any port>` (tuttidaw's dev server, `dev/`) | `build/plugin-site-preview/` |
+| `production` | exactly `https://tuttidaw.com`, `https://www.tuttidaw.com` | `build/plugin-site/`, served at `https://felucca.plugins.tooljams.com` |
+| `preview` | those and `http://localhost:<any port>` (tuttidaw's dev server, `dev/`) | `build/plugin-site-preview/`, served at `https://felucca-preview.plugins.tooljams.com` |
 
 `.github/workflows/plugin-site.yml` builds both from one wasm and keeps the production site as an artifact on a push to
-main (the only event a deployment may come from), the preview site on a pull request.
+main (the only event a production deployment may come from), the preview site on a pull request (artifacts
+`felucca-plugin-site`, `felucca-plugin-site-preview`).
 
 **Source links.** The manifest's `source`, the credits page and the page's footer link the exact commit built
 (`<repo>/tree/<sha>`). With no commit, or a tree with changes not in it, the build fails; `PLUGIN_ALLOW_DIRTY=1` lets a
@@ -72,7 +74,7 @@ Only builds that define `FELUCCA_TUTTI=1` (this plugin's) change; the hardware b
 
 ## Stems and the mix
 
-- `mix` is the FM-1's master output exactly as the instrument makes it (the buses, the master's DC blocker and LOW CUT,
+- `mix` is Felucca's master output exactly as the instrument makes it (the buses, the master's DC blocker and LOW CUT,
   the limiter, the soft clip), with MASTER at its top (the knob is a monitor volume; the live page keeps its own). The
   metronome's click is never in a render (it is the speaker's only on the FM-1 too).
 - `t1`..`t4` are each part's dry signal (after its DIST, INSERT, SLICER, level and pan) plus **its own share of the
@@ -95,19 +97,19 @@ Only builds that define `FELUCCA_TUTTI=1` (this plugin's) change; the hardware b
   automation are as when the song plays through, and a render of a later range is bit for bit the same audio as that
   part of a render from 0.
 - **Tempo maps.** `tempoMap: "constant"`: frame positions follow the host's map (protocol section 5: `frame(beat)` integrates it,
-  linear ramps included); the FM-1 plays the range at the tempo in effect at `fromBeat`. A tempo change inside the
+  linear ramps included); Felucca plays the range at the tempo in effect at `fromBeat`. A tempo change inside the
   range is refused (`unsupported`) unless the request says `approximation: "start-tempo"`; then the range is
   rendered at the start tempo throughout and is as long as that tempo makes it (with `start-tempo`, lengths always
   come from the constant map at the start tempo, protocol section 7; the host warps it).
-- **Tempo range.** The FM-1 plays 40 .. 240 BPM (its own BPM's range, fractional within it). A render whose tempo at
+- **Tempo range.** Felucca plays 40 .. 240 BPM (its own BPM's range, fractional within it). A render whose tempo at
   `fromBeat` is outside it gets `unsupported`; nothing is rendered at a different tempo.
 - **No seek.** `capabilities.seek` is `false`: every render runs from beat 0, and `render-progress` goes over the
   pre-roll from beat 0 and the range together.
-- **Use A / use B.** `input: null`: the FM-1's own sequencer plays (use A), from beat 0, and stops at `toBeat` (the
-  nearest block): its notes are released there and the tail only rings out. With `input` (use B) the FM-1's sequencer
+- **Use A / use B.** `input: null`: Felucca's own sequencer plays (use A), from beat 0, and stops at `toBeat` (the
+  nearest block): its notes are released there and the tail only rings out. With `input` (use B) Felucca's sequencer
   never runs (protocol 7b: only the host's MIDI plays, the state gives the sounds and settings; realtime messages are
   not taken, so the MIDI cannot start it either) and the notes, CC and pitch bend go in as USB-MIDI would deliver them:
-  a channel plays the part the FM-1's MIDI IN setting gives it (by default MIDI channels 0..3, "1..4" on the device,
+  a channel plays the part Felucca's MIDI IN setting gives it (by default MIDI channels 0..3, "1..4" on the device,
   play T1..T4: the manifest's `midiChannels`). Notes are released at `min(end, toBeat)`; a note's off comes at least
   a block (32 frames) after its on, so a note of length 0 (or less) still sounds and is let go, never off before on;
   moved that way, it still comes before the next note of the same pitch on the same channel, never cutting it.
@@ -129,22 +131,22 @@ about 4 KiB, everything at most about 320 KiB. The hardware's backup files (`web
 (they restore through the device's editor protocol); save a project on the FM-1 and rebuild it here, or use the
 emulator.
 
-Revisions: 1 is the state `init` gave (or the factory state). An edit on the live FM-1 (its music, a saved preset or
+Revisions: 1 is the state `init` gave (or the factory state). An edit on the live Felucca (its music, a saved preset or
 project, a setting) starts the next revision, `state-changed` follows once it has been still for 600 ms (at most every
 2 s while it keeps changing). Renders take the state of the revision they ask for (the last 8 are kept).
 
 ## The page
 
 - In tuttidaw's frame: the handshake (accepted from the build's channel's embedders, above, from the parent window
-  only), then `init`. Edit mode: the live FM-1 starts with the state (on its own if the browser lets the frame play
+  only), then `init`. Edit mode: the live Felucca starts with the state (on its own if the browser lets the frame play
   sound, else with Switch on). It saves nothing in this browser, and tuttidaw's transport drives its preview
-  (listen-only: it starts at `atEpochMs` less the output latency, a drift of over 20 ms re-seeks). A seek runs the
-  FM-1's sequencer up to the position at most 1024 blocks per audio quantum (`tutti_seek_run`, about 0.2 ms; silent
+  (listen-only: it starts at `atEpochMs` less the output latency, a drift of over 20 ms re-seeks). A seek runs
+  Felucca's sequencer up to the position at most 1024 blocks per audio quantum (`tutti_seek_run`, about 0.2 ms; silent
   meanwhile, the time it takes added), so a seek minutes into a song never stalls the audio thread. Render to tuttidaw
-  sends `commit` (the mix, or with the T1..T4 stems). Renders run in a Worker, so the FM-1 and its screen stay live.
+  sends `commit` (the mix, or with the T1..T4 stems). Renders run in a Worker, so the live Felucca and its screen stay live.
   `mode: "render"` is headless: no device, no audio, only renders.
 - **Tempo while hosted.** The host's tempo is a runtime value: the screen shows it, but the song's own BPM (in the
-  state) stays as it was, so tuttidaw's tempo never changes the state or starts a new revision. The FM-1's BPM knob
+  state) stays as it was, so tuttidaw's tempo never changes the state or starts a new revision. Its BPM knob
   and TAP still change the song's own BPM (saved with the state), which plays no part while hosted: they have no
   audible effect in tuttidaw.
 - **Sessions.** A request keeps the session it came in with: what it sends after the session has ended (an `init`

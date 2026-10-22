@@ -104,7 +104,7 @@ keeps the flash's storage sectors (projects, user presets, settings) in the brow
 MIDI out, the editor, updates), TRS MIDI and the user sample slots. A build of it is on the site:
 <https://hugelton.github.io/Felucca/webapp/try/>.
 
-## FM-1 plugin for tuttidaw
+## Felucca plugin for tuttidaw
 
 ```
 tools/build.py --gen-only           # only build/gen (the generated headers): no JieLi toolchain or SDK
