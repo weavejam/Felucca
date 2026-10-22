@@ -8,8 +8,8 @@
 //   - opened by itself (or not connected within a few seconds): the emulator as on its own page, a note that it is a
 //     tuttidaw plugin.
 import { PluginSession, embedderAllowed } from "./protocol.js";
-import { FM1Engine } from "./engine.js";
-import { RenderError, checkTimeMap, tempoAt, MIN_BPM, MAX_BPM } from "./renderer.js";
+import { FM1Engine, PreviewTempo } from "./engine.js";
+import { RenderError } from "./renderer.js";
 import { BUILD, EMBEDDERS } from "./build-info.js";
 
 const embedded = window.parent !== window;
@@ -80,7 +80,7 @@ function becomeStandalone() {
 }
 
 // ------------------------------------------------------------------ the live FM-1 (edit mode)
-let pts = [{ beat: 0, bpm: 120, ramp: "step" }], bpm = 0, sigBase = null, flashBase = null, snapWait = new Map(), snapId = 0;
+let sigBase = null, flashBase = null, snapWait = new Map(), snapId = 0, loads = 0;
 const flashKey = (sectors) => {                        // the flash outside the autosave (presets, projects, settings)
   let h = 2166136261;
   for (const off of Object.keys(sectors).map(Number).sort((a, b) => a - b)) {
@@ -91,14 +91,12 @@ const flashKey = (sectors) => {                        // the flash outside the 
   return h >>> 0;
 };
 const send = (m) => { if (node) node.port.postMessage(m); };
-function setTempo(beat) {
-  const b = Math.min(MAX_BPM, Math.max(MIN_BPM, tempoAt(pts, beat)));   // (the preview: within the FM-1's range)
-  if (b !== bpm) { bpm = b; send({ type: "tutti-tempo", bpm }); }
-}
+const tempo = new PreviewTempo((bpm) => send({ type: "tutti-tempo", bpm }));
 
 const live = {
   sectors: {},
   async load(sectors, context) {
+    loads++;
     this.sectors = sectors;
     flashBase = flashKey(sectors);
     sigBase = null;
@@ -114,8 +112,8 @@ const live = {
       node = n;
       ac = c;
       liveOn = true;
-      bpm = 0;
-      setTempo(0);
+      tempo.reset();
+      tempo.at(0);
       const frames = n.port.onmessage;
       n.port.onmessage = (e) => {
         const m = e.data;
@@ -148,24 +146,22 @@ const live = {
   },
   async snapshot() {
     if (!node || !liveOn) return this.sectors;         // (not switched on: nothing changed)
-    const id = ++snapId;
+    const id = ++snapId, load = loads;
     const m = await new Promise((res, rej) => {
       snapWait.set(id, res);
       send({ type: "tutti-snapshot", id });
       setTimeout(() => { if (snapWait.delete(id)) rej(new RenderError("internal", "the live FM-1 did not answer")); }, 5000);
     });
     if (!m.ok) throw new RenderError("internal", "the live FM-1 could not save its state");
+    if (load !== loads) return m.sectors;              // (a state loaded since, another session's: it stays)
     sigBase = m.sig;
     flashBase = flashKey(m.sectors);
     return (this.sectors = m.sectors);
   },
-  context(ctx) {
-    try { pts = checkTimeMap(ctx && ctx.timeMap); } catch { return; }
-    setTempo(0);
-  },
+  context(ctx) { tempo.context(ctx); },
   transport(t) {
     if (!node || !ac) return;
-    setTempo(t.beat);
+    tempo.at(t.beat);
     if (!t.playing) { send({ type: "tutti-play", gen: t.generation, playing: false }); return; }
     // the context frame heard at atEpochMs: by the output's timestamp (it has the output latency) where there is one
     let atCtx;
@@ -173,7 +169,7 @@ const live = {
     if (ts && ts.performanceTime > 0) atCtx = ts.contextTime + (t.atEpochMs - (performance.timeOrigin + ts.performanceTime)) / 1000;
     else atCtx = ac.currentTime + (t.atEpochMs - (performance.timeOrigin + performance.now())) / 1000 - (ac.outputLatency || ac.baseLatency || 0);
     send({ type: "tutti-play", gen: t.generation, playing: true, atFrame: Math.round(atCtx * ac.sampleRate),
-           pos: Math.round((t.beat * 60 / bpm) * 44100) });
+           pos: Math.round((t.beat * 60 / tempo.bpm) * 44100) });
   },
   close() { send({ type: "tutti-play", gen: -1, playing: false }); },
 };
@@ -183,6 +179,8 @@ const live = {
 // waited for) goes with its worker, and the new one gets a fresh worker
 let worker = null, workerBusy = null;
 function renderInWorker(sectors, req, sink) {
+  // (an ended session's render, its state made late: it never touches the worker, the next session's render may be in it)
+  if (sink.cancelled()) return Promise.reject(new RenderError("cancelled", "cancelled"));
   if (worker && workerBusy) {
     worker.terminate();
     workerBusy(new RenderError("cancelled", "the session ended"));
