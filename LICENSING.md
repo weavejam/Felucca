@@ -15,7 +15,7 @@ Every file in this tree that carries an `SPDX-License-Identifier: GPL-3.0-only` 
 - the build script and tools: `build.sh`, `tools/` (not `tools/gen_waves.py`, the Hügelton Sample Pack: CC0 1.0, below)
 - the web pages (installer, editor, the browser emulator `web/emu/`) and their tests: `web/` (not the Fukiai and DotGothic16 fonts, below)
 - the host tests: `tests/`
-- the FM-1 plugin for tuttidaw: `web/plugin/` (below)
+- the Felucca plugin for tuttidaw: `web/plugin/` (below)
 
 Three source files are ports and keep the licence of their originals:
 `firmware/src/phys_dsp.c` (DaisySP, MIT), `firmware/src/phys_symp.c` (Rings, MIT) and
@@ -39,7 +39,7 @@ You may use, study, change and share Felucca under the GPL. If you distribute Fe
 firmware derived from it, you must also give your recipients its complete corresponding
 source under the same licence. That includes devices that ship with modified Felucca inside.
 
-## The FM-1 plugin for tuttidaw (weavejam)
+## The Felucca plugin for tuttidaw (weavejam)
 
 `web/plugin/` (the headless renderer, the stems, the fractional tempo, the plugin page and its protocol, the site's build)
 and the `FELUCCA_TUTTI` parts of the firmware it needs are by weavejam, in the fork

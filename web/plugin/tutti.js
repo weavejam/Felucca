@@ -2,13 +2,13 @@
 // Copyright (C) 2026 weavejam
 // The plugin page (/plugin/): the browser emulator's page (web/emu/index.html, built into this one by build.sh) with
 // tuttidaw's protocol (tutti-plugin/0, protocol.js). Loaded before the emulator's script: it sets window.feluccaHost.
-//   - in tuttidaw's iframe: the handshake; `init` gives the state the live FM-1 starts with (no saves in this browser);
+//   - in tuttidaw's iframe: the handshake; `init` gives the state the live Felucca starts with (no saves in this browser);
 //     the host's tempo and transport drive its preview; edits make new state revisions (state-changed); "Render to
 //     tuttidaw" sends `commit`; renders run in a Worker (render-worker.js); mode 'render': headless, nothing else runs.
 //   - opened by itself (or not connected within a few seconds): the emulator as on its own page, a note that it is a
 //     tuttidaw plugin.
 import { PluginSession, embedderAllowed } from "./protocol.js";
-import { FM1Engine, PreviewTempo } from "./engine.js";
+import { FeluccaEngine, PreviewTempo } from "./engine.js";
 import { RenderError } from "./renderer.js";
 import { BUILD, EMBEDDERS } from "./build-info.js";
 
@@ -43,7 +43,7 @@ function ui() {
       .tutti [hidden] { display: none !important; }
     </style>
     <span id="tt-connected" hidden>
-      <button id="tt-commit" type="button" title="Render this FM-1's song into tuttidaw at tuttidaw's tempo">Render to tuttidaw</button>
+      <button id="tt-commit" type="button" title="Render this Felucca song into tuttidaw at tuttidaw's tempo">Render to tuttidaw</button>
       <label><input type="checkbox" id="tt-stems"> T1–T4 stems too</label>
     </span>
     <span id="tt-render" hidden>Rendering <progress id="tt-progress" max="1" value="0"></progress></span>
@@ -51,7 +51,7 @@ function ui() {
   document.querySelector("main").insertBefore(bar, document.querySelector(".keys"));
   const foot = document.querySelector("footer");
   const credit = document.createElement("p");
-  credit.innerHTML = `FM-1 plugin for <a href="https://tuttidaw.com">tuttidaw</a> by weavejam, built from Felucca
+  credit.innerHTML = `Felucca plugin for <a href="https://tuttidaw.com">tuttidaw</a> by weavejam, built from Felucca
     (GPL-3.0) · <a href="../credits.html" target="_blank" rel="noopener">credits, licences, source</a><br>
     <small>Source of this build: <span id="tt-source"></span></small><br>
     <small>Not affiliated with or endorsed by M-VAVE.</small>`;
@@ -76,10 +76,10 @@ function becomeStandalone() {
   delete host.keep;
   host.midi = true;
   if ($("go")) $("go").disabled = false;
-  note("This is the FM-1 plugin for tuttidaw. Opened on its own it is the Felucca emulator: your saves stay in this browser.");
+  note("This is the Felucca plugin for tuttidaw. Opened on its own it is the Felucca emulator: your saves stay in this browser.");
 }
 
-// ------------------------------------------------------------------ the live FM-1 (edit mode)
+// ------------------------------------------------------------------ the live Felucca (edit mode)
 let sigBase = null, flashBase = null, snapWait = new Map(), snapId = 0, loads = 0;
 const flashKey = (sectors) => {                        // the flash outside the autosave (presets, projects, settings)
   let h = 2166136261;
@@ -102,7 +102,7 @@ const live = {
     sigBase = null;
     this.context(context);
     host.sectors = () => this.sectors;
-    host.keep = (s) => {                               // a save on the live FM-1: a change (the autosave's own: not)
+    host.keep = (s) => {                               // a save on the live Felucca: a change (the autosave's own: not)
       const k = flashKey(s);
       if (flashBase !== null && k !== flashBase) engine.changed();
       flashBase = k;
@@ -150,9 +150,9 @@ const live = {
     const m = await new Promise((res, rej) => {
       snapWait.set(id, res);
       send({ type: "tutti-snapshot", id });
-      setTimeout(() => { if (snapWait.delete(id)) rej(new RenderError("internal", "the live FM-1 did not answer")); }, 5000);
+      setTimeout(() => { if (snapWait.delete(id)) rej(new RenderError("internal", "the live Felucca did not answer")); }, 5000);
     });
-    if (!m.ok) throw new RenderError("internal", "the live FM-1 could not save its state");
+    if (!m.ok) throw new RenderError("internal", "the live Felucca could not save its state");
     if (load !== loads) return m.sectors;              // (a state loaded since, another session's: it stays)
     sigBase = m.sig;
     flashBase = flashKey(m.sectors);
@@ -215,7 +215,7 @@ function renderInWorker(sectors, req, sink) {
 }
 
 // ------------------------------------------------------------------ the session
-const engine = new FM1Engine({
+const engine = new FeluccaEngine({
   render: renderInWorker,
   live,
   onChanged: (rev) => session.stateChanged(rev),

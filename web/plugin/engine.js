@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 weavejam
-// The FM-1 behind a session (protocol.js engine): the state and its revisions, renders of a revision's state, the
+// The live Felucca behind a session (protocol.js engine): the state and its revisions, renders of a revision's state, the
 // live device of the page (edit mode) when there is one.
 //   render(sectors, request, sink) -> result      renderer.js render, here or in a Worker (render-worker.js)
 //   live (edit mode, the page; null headless): {
@@ -16,7 +16,7 @@ import { RenderError, checkTimeMap, tempoAt, MIN_BPM, MAX_BPM } from "./renderer
 
 const KEEP = 8;                                        // revisions whose states are kept for renders
 
-export class FM1Engine {
+export class FeluccaEngine {
   constructor({ render, live = null, onChanged = () => {}, name = () => null }) {
     this.renderFn = render;
     this.live = live;
@@ -95,7 +95,7 @@ export class FM1Engine {
   close() { if (this.live) this.live.close(); }
 }
 
-// the live preview's tempo (tutti.js live): the host's time map (`context`) and the tempo at a beat, within the FM-1's
+// the live preview's tempo (tutti.js live): the host's time map (`context`) and the tempo at a beat, within Felucca's
 // range; send(bpm) when it changes
 export class PreviewTempo {
   constructor(send) {

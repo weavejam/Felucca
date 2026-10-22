@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 weavejam
-// The plugin's static site (web/plugin/build.sh calls it), for Cloudflare Pages or any static host:
+// The plugin's static site (web/plugin/build.sh calls it), for Cloudflare Pages or any static host (deployed: production
+// https://felucca.plugins.tooljams.com, preview https://felucca-preview.plugins.tooljams.com):
 //   PLUGIN_CHANNEL=production|preview node web/plugin/site.mjs WASM OUT FELUCCA_VERSION
 //   OUT/tutti-plugin.json   the manifest (protocol-v0 1), CORS * (_headers)
 //   OUT/_headers            Cloudflare Pages: the manifest's CORS and no-cache, frame-ancestors (the channel's embedders),
@@ -63,12 +64,12 @@ copy(src("web/emu/fonts/DotGothic16-subset.woff"), "plugin/fonts/DotGothic16-sub
 copy(src("web/emu/fonts/OFL.txt"), "plugin/fonts/OFL.txt");
 let page = fs.readFileSync(src("web/emu/index.html"), "utf8");
 const swap = (a, b) => { if (!page.includes(a)) throw new Error(`site: web/emu/index.html has no ${a}`); page = page.replace(a, b); };
-swap("<title>Felucca</title>", "<title>FM-1 · tuttidaw plugin</title>");
+swap("<title>Felucca</title>", "<title>Felucca · tuttidaw plugin</title>");
 swap(/<meta name="description" content="[^"]*">/.exec(page)[0],
-     '<meta name="description" content="FM-1 for tuttidaw: the Felucca firmware for the FM-1 in your browser, rendering into tuttidaw.">');
+     '<meta name="description" content="Felucca for tuttidaw: the Felucca firmware for the M-VAVE FM-1 in your browser, rendering into tuttidaw.">');
 swap('<script type="module">', '<script type="module" src="tutti.js"></script>\n<script type="module">');
 swap('from "./worklet.js";', 'from "../emu/worklet.js";');   // (one copy of the emulator's worklet module: emu/)
-page = page.replace(/@VERSION@/g, esc(fwVersion)).replace(/@PREVIEW@/g, ` · FM-1 plugin ${esc(PLUGIN_VERSION)}`);
+page = page.replace(/@VERSION@/g, esc(fwVersion)).replace(/@PREVIEW@/g, ` · Felucca plugin ${esc(PLUGIN_VERSION)}`);
 put("plugin/index.html", page);
 
 // ---- credits, licences, source
@@ -85,12 +86,12 @@ a { color: #0b57d0; } code { font-size: 13px; } .notice { padding: 10px 14px; ba
 put("credits.html", `<!doctype html>
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FM-1 plugin · credits, licences, source</title>${STYLE}</head><body><main>
-<h1>FM-1 plugin for tuttidaw</h1>
+<title>Felucca plugin · credits, licences, source</title>${STYLE}</head><body><main>
+<h1>Felucca plugin for tuttidaw</h1>
 <p>Version ${esc(version)} · <a href="plugin/">open the plugin</a></p>
 <p class="notice"><strong>Not affiliated with or endorsed by M-VAVE.</strong> "M-VAVE" and "FM-1" are trademarks of their
-respective owners. This plugin runs Felucca, independent firmware for the FM-1, in your browser; it contains no M-VAVE
-material.</p>
+respective owners. This plugin runs Felucca, independent firmware for the M-VAVE FM-1 (the hardware it runs on), in your
+browser; it contains no M-VAVE material.</p>
 <h2>Who made it</h2>
 <ul>
 <li><strong>Felucca</strong>, the firmware this plugin is built from (all of the sound and the instrument), by
@@ -120,13 +121,13 @@ site's build): <a href="${esc(sourceAt)}">${esc(sourceAt)}</a>. Build it with <c
 put("index.html", `<!doctype html>
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FM-1 plugin for tuttidaw</title>${STYLE}</head><body><main>
-<h1>FM-1 plugin for tuttidaw</h1>
-<p>The Felucca firmware for the FM-1, running in your browser, as a <a href="https://tuttidaw.com">tuttidaw</a> plugin
+<title>Felucca plugin for tuttidaw</title>${STYLE}</head><body><main>
+<h1>Felucca plugin for tuttidaw</h1>
+<p>The Felucca firmware for the M-VAVE FM-1, running in your browser, as a <a href="https://tuttidaw.com">tuttidaw</a> plugin
 (protocol <code>${PROTOCOL}</code>, manifest <a href="tutti-plugin.json">tutti-plugin.json</a>).</p>
 <p><a href="plugin/">Open it on its own</a> (the emulator; your saves stay in this browser) ·
 <a href="credits.html">credits, licences, source</a></p>
-<p class="notice">Not affiliated with or endorsed by M-VAVE.</p>
+<p class="notice">Not affiliated with or endorsed by M-VAVE. The FM-1 is the M-VAVE hardware Felucca runs on.</p>
 </main></body></html>
 `);
 put("icon.svg", `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#1d1d1f"/><rect x="18" y="10" width="28" height="22" rx="3" fill="#0b0b0c" stroke="#3a3a3e"/><g fill="#2a2a2d" stroke="#3a3a3e">${[0, 1, 2, 3, 4, 5].map((i) => `<rect x="${8 + i * 8}" y="40" width="6" height="16" rx="3"/>`).join("")}</g><rect x="22" y="14" width="20" height="14" fill="#5fe08a" opacity=".85"/></svg>\n`);
@@ -144,14 +145,14 @@ h.update(`channel\0${channel}\0${EMBEDDERS.join(" ")}`);           // (the chann
 const build = h.digest("hex").slice(0, 16);
 const manifest = {
   protocol: PROTOCOL,
-  id: "com.weavejam.fm1",
-  name: "FM-1",
+  id: "com.weavejam.felucca",
+  name: "Felucca",
   vendor: "weavejam (Felucca firmware by Leo Kuroshita / Hügelton Instruments)",
   version,
   build,
   license: "GPL-3.0-only",
   source: sourceAt,
-  notice: "Not affiliated with or endorsed by M-VAVE.",
+  notice: "Not affiliated with or endorsed by M-VAVE. FM-1 is the M-VAVE hardware Felucca runs on.",
   entry: "/plugin/",
   icon: "/icon.svg",
   state: { version: STATE_VERSION, reads: STATE_READS },

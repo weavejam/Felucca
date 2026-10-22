@@ -28,5 +28,5 @@ thanks the work below; each keeps its own licence (see [LICENSE](LICENSE), [LICE
   [jasonpersinger](https://github.com/jasonpersinger) (the ROOM reverb click fix, #121),
   [renebohne](https://github.com/renebohne) (MIDI Program Change, #179),
   [gospodindilly-ops](https://github.com/gospodindilly-ops) (the second core, #247)
-- The FM-1 plugin for [tuttidaw](https://tuttidaw.com) (`web/plugin/`: the headless renderer, part stems, fractional tempo,
+- The Felucca plugin for [tuttidaw](https://tuttidaw.com) (`web/plugin/`: the headless renderer, part stems, fractional tempo,
   the plugin page): weavejam, in the fork [weavejam/Felucca](https://github.com/weavejam/Felucca) (GPL-3.0-only)

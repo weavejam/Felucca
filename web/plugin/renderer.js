@@ -2,10 +2,10 @@
 // Copyright (C) 2026 weavejam
 // The offline renderer (tutti-plugin/0 `render`): a fresh instance of felucca.wasm (web/plugin/felucca_plugin.c) per
 // render, booted with the state's flash, the host's tempo, the transport started at its frame 0 = beat 0 (use A: the
-// FM-1's own sequencer; use B: the request's MIDI instead, the sequencer stopped), rendered from there (every render
+// Felucca's own sequencer; use B: the request's MIDI instead, the sequencer stopped), rendered from there (every render
 // from the song's start, so what sounds at fromBeat is what playing from the top gives: held notes, delay and reverb
 // tails, LFOs), the frames before fromBeat dropped. Runs where it is called: a Worker (render-worker.js) or Node (tests).
-//   mix      the master output, as the FM-1's (the limiter, the soft clip), MASTER at its top
+//   mix      the master output, as Felucca's (the limiter, the soft clip), MASTER at its top
 //   t1..t4   a part's stem: its dry mix and its own share of the buses (README "Stems")
 // 44.1 kHz is the firmware's rate; 48 kHz through resample.js.
 import { restoreSectors } from "../emu/worklet.js";
@@ -92,9 +92,9 @@ export function planRender(req, { tempoMap = "constant" } = {}) {
   const bpm = tempoAt(pts, fromBeat), changes = tempoChanges(pts, fromBeat, toBeat);
   const approx = req.approximation === "start-tempo";
   if (changes && tempoMap !== "full" && !approx)
-    throw new RenderError("unsupported", "the tempo changes inside the range: FM-1 renders a constant tempo (approximation 'start-tempo')");
+    throw new RenderError("unsupported", "the tempo changes inside the range: Felucca renders a constant tempo (approximation 'start-tempo')");
   if (!(bpm >= MIN_BPM && bpm <= MAX_BPM))
-    throw new RenderError("unsupported", `${bpm} BPM at fromBeat: FM-1 plays ${MIN_BPM} .. ${MAX_BPM} BPM`);
+    throw new RenderError("unsupported", `${bpm} BPM at fromBeat: Felucca plays ${MIN_BPM} .. ${MAX_BPM} BPM`);
   const sr = sampleRate, tail = Math.ceil((tailMs * sr) / 1000);
   // protocol 5: frame(beat) integrates the map from beat 0. With 'start-tempo' (protocol 7) frame() is a constant map at
   // the tempo at fromBeat: the range rendered at that tempo throughout, its length that tempo's (the host warps it)
@@ -190,7 +190,7 @@ export async function render(module, sectors, req, sink, opts = {}) {
     for (const e of plan.events)
       if (!main.tutti_event(e.frame, e.status, e.d1, e.d2)) throw new RenderError("too-large", "too many MIDI events");
   } else main.tutti_start(plan.stop);                 // use A: the song from frame 0, stopped at toBeat (the tail rings out)
-  // (use B: the FM-1's sequencer never starts, protocol 7b: only the host's MIDI plays; tutti_event takes no realtime
+  // (use B: Felucca's sequencer never starts, protocol 7b: only the host's MIDI plays; tutti_event takes no realtime
   // messages, so the MIDI cannot start it either)
 
   const B = main.tutti_block_frames(), MAXB = main.tutti_max_blocks();

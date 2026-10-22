@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 weavejam
-# The FM-1 plugin for tuttidaw (web/plugin/README.md): the firmware built as the browser emulator's (web/emu/build.sh)
+# The Felucca plugin for tuttidaw (web/plugin/README.md): the firmware built as the browser emulator's (web/emu/build.sh)
 # with FELUCCA_TUTTI (web/plugin/felucca_plugin.c), and the static site that serves it, per deployment channel:
 #   PLUGIN_CHANNEL=production web/plugin/build.sh  ->  build/plugin-site/{tutti-plugin.json, _headers, plugin/, emu/, ...}
 #   PLUGIN_CHANNEL=preview    web/plugin/build.sh  ->  build/plugin-site-preview/ (the default; also embeddable from

@@ -3,7 +3,7 @@
  * Parts derived from Felucca (tutti_settings_flush and tutti_snapshot after project.c settings_poll and autosave_poll,
  * tutti_restore after autosave_boot, tutti_render after audio.c audio_block, tutti_stem_render after fx.c master_out):
  * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
- * FM-1 for tuttidaw (protocol tutti-plugin/0, web/plugin/README.md): the browser emulator (web/emu/felucca_web.c,
+ * Felucca for tuttidaw (protocol tutti-plugin/0, web/plugin/README.md): the browser emulator (web/emu/felucca_web.c,
  * the whole firmware against a simulated FM-1) built with FELUCCA_TUTTI, plus what a host needs:
  *   - the host's tempo, fractional (core.h tutti_beat_q32: the step clocks keep to its grid over any length);
  *   - a headless render: the device without its main loop (no screen, no keys, no flash writes), the transport
@@ -22,7 +22,7 @@
 
 /* ------------------------------------------------------------ the tempo --- */
 /* the host's tempo: the firmware's own range (params.c G_BPM, 40 .. 240), fractional. A runtime value only: the song's
- * G_BPM (in the state and the autosave's signature) stays the FM-1's own, and while hosted its BPM knob and TAP change
+ * G_BPM (in the state and the autosave's signature) stays Felucca's own, and while hosted its BPM knob and TAP change
  * that, not the tempo; the screen shows the host's (core.h HEAD_BPM) */
 #define TUTTI_BPM_MIN 40.0
 #define TUTTI_BPM_MAX 240.0

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 weavejam
-// The plugin page's live FM-1: the emulator's worklet (web/emu/worklet.js, its Felucca processor) on the plugin's build
+// The plugin page's live Felucca: the emulator's worklet (web/emu/worklet.js, its Felucca processor) on the plugin's build
 // (felucca_plugin.c) with what the host needs from it:
 //   load            as the emulator's, booted by tutti_boot (the state's music, RESTORE LAST or not); again for a
 //                   new state (the module kept)
@@ -32,7 +32,7 @@ class FeluccaTutti extends Base {
     if (m.type === "load") return this.load(m);
     if (m.type === "tutti-tempo") {
       this.bpm = m.bpm;
-      if (this.ex) this.ex.tutti_tempo(m.bpm);         // (out of the FM-1's range: refused, the tempo stays)
+      if (this.ex) this.ex.tutti_tempo(m.bpm);         // (out of Felucca's range: refused, the tempo stays)
       return;
     }
     const ex = this.ex;

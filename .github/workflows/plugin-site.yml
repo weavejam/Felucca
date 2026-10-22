@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 weavejam
-# The FM-1 plugin for tuttidaw (web/plugin/README.md): the generated headers (no JieLi toolchain), the browser emulator
+# The Felucca plugin for tuttidaw (web/plugin/README.md): the generated headers (no JieLi toolchain), the browser emulator
 # and the plugin built with Emscripten, their tests, and the plugin's static site for both deployment channels
 # (web/plugin/site.mjs PLUGIN_CHANNEL): production (embeddable by https://tuttidaw.com and https://www.tuttidaw.com
 # only) kept as an artifact on a push to main, preview (also http://localhost:<port>) on a pull request.
@@ -58,7 +58,7 @@ jobs:
           node web/emu/emu_test.mjs build/emu/felucca.wasm
 
       # both channels from one wasm; site.mjs fails on a tree with changes not in the commit (the source link)
-      - name: FM-1 plugin (web/plugin), its sites and its test
+      - name: Felucca plugin (web/plugin), its sites and its test
         run: |
           git status --porcelain
           PLUGIN_CHANNEL="production preview" sh web/plugin/build.sh
@@ -68,7 +68,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4
         with:
-          name: fm1-plugin-site
+          name: felucca-plugin-site
           path: build/plugin-site
           include-hidden-files: true
           if-no-files-found: error
@@ -77,12 +77,13 @@ jobs:
         if: github.event_name != 'push'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4
         with:
-          name: fm1-plugin-site-preview
+          name: felucca-plugin-site-preview
           path: build/plugin-site-preview
           include-hidden-files: true
           if-no-files-found: error
 
-      # Deployment to Cloudflare Pages (by the lead for now), only from a push to main (the production site). To deploy
+      # Deployment to Cloudflare Pages (by the lead for now), only from a push to main (the production site, served at
+      # https://felucca.plugins.tooljams.com; the preview at https://felucca-preview.plugins.tooljams.com). To deploy
       # from here: a Pages project, the secrets CLOUDFLARE_API_TOKEN (Pages: Edit) and CLOUDFLARE_ACCOUNT_ID, then
       # uncomment:
       # - name: Deploy to Cloudflare Pages
@@ -91,4 +92,4 @@ jobs:
       #   with:
       #     apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       #     accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      #     command: pages deploy build/plugin-site --project-name=fm1-tutti-plugin --branch=main
+      #     command: pages deploy build/plugin-site --project-name=felucca-tutti-plugin --branch=main

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 weavejam
-// The FM-1 plugin (web/plugin) in Node: the renderer against the wasm, and the protocol against a fake host over a
+// The Felucca plugin (web/plugin) in Node: the renderer against the wasm, and the protocol against a fake host over a
 // MessageChannel (protocol-v0 11, the plugin's side).
 //   node web/plugin/plugin_test.mjs build/plugin-wasm/felucca.wasm [build/emu/felucca.wasm]
 // With the emulator's wasm too: the plugin's build (FELUCCA_TUTTI) plays the emulator's heavy song bit for bit as it
@@ -14,7 +14,7 @@ import { storeSectors } from "../emu/worklet.js";
 import { render, planRender, midiEvents, device, frameAt, RenderError, NATIVE_RATE, MIN_BPM, MAX_BPM } from "./renderer.js";
 import { packState, unpackState, stateEquals, STATE_VERSION } from "./state.js";
 import { PluginSession, embedderAllowed, CHANNELS, PROTOCOL, INITIAL_CREDITS } from "./protocol.js";
-import { FM1Engine, PreviewTempo } from "./engine.js";
+import { FeluccaEngine, PreviewTempo } from "./engine.js";
 import { Resampler } from "./resample.js";
 
 const wasmPath = process.argv[2] || "build/plugin-wasm/felucca.wasm", emuPath = process.argv[3];
@@ -209,7 +209,7 @@ if (!FAST) {
   check("use B: a note held over fromBeat sounds from its first frame (rendered from the song's start)",
         same(held.subarray(held.length - late.length), late) && peak(late.subarray(0, 64)) > 1e-3);
 }
-{ // use B: the FM-1's own sequencer does not run when the request has input (protocol 7b), its song in the state or not
+{ // use B: Felucca's own sequencer does not run when the request has input (protocol 7b), its song in the state or not
   const none = { notes: [], cc: [], pitchBend: [], preRollBeats: 0 };
   const a = (await renderAll(heavy, req({ input: null, outputs: ALL, toBeat: 8 }))).out;
   const b = (await renderAll(heavy, req({ input: none, outputs: ALL, toBeat: 8, tailMs: 500 }))).out;
@@ -353,12 +353,12 @@ class NodeLive {
 const HOST = "https://tuttidaw.com";
 function harness({ live = null, chunkFrames } = {}) {
   const hello = [];
-  const engine = new FM1Engine({
+  const engine = new FeluccaEngine({
     render: (sectors, r, sink) => render(mod, sectors, r, sink, chunkFrames ? { chunkFrames } : {}),
     live, onChanged: (rev) => session.stateChanged(rev),
   });
   if (live) live.engine = engine;
-  const session = new PluginSession({ engine, post: (m) => hello.push(m), plugin: { id: "com.weavejam.fm1", version: "t", build: "t" } });
+  const session = new PluginSession({ engine, post: (m) => hello.push(m), plugin: { id: "com.weavejam.felucca", version: "t", build: "t" } });
   const h = { session, engine, hello, got: [], waiters: [] };
   h.connect = (o = {}) => {
     const ch = new MessageChannel();
@@ -429,7 +429,7 @@ const collect = (h, renderId) => {                    // the chunks of a render,
   h.send({ type: "init", id: "i1", sampleRate: 44100, context: ctxOf(120), state: null, stateVersion: null, mode: "render" });
   const i1 = await h.reply("i1");
   check("init (null state, mode render, no gesture, no audio): init:ok {plugin, stateRevision}",
-        i1.type === "init:ok" && i1.plugin.id === "com.weavejam.fm1" && i1.stateRevision === 1 && i1.sessionId === first);
+        i1.type === "init:ok" && i1.plugin.id === "com.weavejam.felucca" && i1.stateRevision === 1 && i1.sessionId === first);
   h.send({ type: "init", id: "i2", sampleRate: 44100, context: ctxOf(120), state: null, stateVersion: null, mode: "render" });
   check("init twice: bad-request", (await h.reply("i2")).code === "bad-request");
   h.send({ type: "bogus" });
@@ -593,7 +593,7 @@ const collect = (h, renderId) => {                    // the chunks of a render,
 {
   const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
   const site = (channel, env = {}) => {
-    const out = fs.mkdtempSync(path.join(os.tmpdir(), `fm1-site-${channel}-`));
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), `felucca-site-${channel}-`));
     const r = spawnSync(process.execPath, [path.join(ROOT, "web/plugin/site.mjs"), path.resolve(wasmPath), out, "1.0"],
                         { cwd: ROOT, env: { ...process.env, PLUGIN_ALLOW_DIRTY: "", ...env, PLUGIN_CHANNEL: channel }, encoding: "utf8" });
     return { out, ...r };
@@ -705,7 +705,7 @@ const collect = (h, renderId) => {                    // the chunks of a render,
   const snaps = [], renders = [];
   const live = { load: async () => {}, context() {}, transport() {}, close() {},
                  snapshot: () => new Promise((res) => snaps.push(res)) };
-  const engine = new FM1Engine({ render: (sectors) => { renders.push(sectors); return { frames: 1, outputs: ["mix"] }; }, live });
+  const engine = new FeluccaEngine({ render: (sectors) => { renders.push(sectors); return { frames: 1, outputs: ["mix"] }; }, live });
   const A = { 0xE5000: new Uint8Array(4096).fill(1) }, B = { 0xE5000: new Uint8Array(4096).fill(2) };
   const C = { 0xE5000: new Uint8Array(4096).fill(3) };
   // a render of the ended session (its sink cancelled meanwhile): never rendered, never into the worker
