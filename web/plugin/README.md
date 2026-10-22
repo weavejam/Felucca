@@ -171,6 +171,8 @@ revision never has two different states.
   - *portrait* (a phone's sheet): the upright drawing, the same under it.
   The frame can be resized to anything (tuttidaw: 480 x 360 and up); `resize` asks once, when connected, for the wide
   layout's own shape (1280 x 800), a preference only. Opened by itself the page lays out the same way.
+  `screenshots/`: in a frame (`hosted-<width>x<height>.png`, the tests' heavy song playing, T3 with ARP HOLD) and opened
+  by itself, Chromium.
 - In tuttidaw's frame: the handshake (accepted from the build's channel's embedders, above, from the parent window
   only), then `init`. Edit mode: the live Felucca starts with the state (on its own if the browser lets the frame play
   sound, else with Switch on). It saves nothing in this browser, and tuttidaw's transport drives its preview
