@@ -118,7 +118,8 @@ const BLACK_AFTER = [0, 1, 2, 4, 5, 7, 8, 9, 11, 12, 14];      // the white key 
 const STORE = "felucca-emu-flash", KNOBS_ON = "felucca-emu-knobs", KNOB_MODE = "felucca-emu-knobmode";
 // A page that embeds the emulator (web/plugin/tutti.js, the tuttidaw plugin) sets window.feluccaHost first: its
 // worklet, processor and wasm, the flash to start with and where the saves go (instead of this browser's), the frames
-// as they come, the device once on, midi: false for no Web MIDI. None: the emulator as always
+// as they come, the device once on, midi: false for no Web MIDI, drawing() for the drawing to use ("wide" or "tall";
+// attach's draw(name) changes it). None: the emulator as always
 const HOST = window.feluccaHost || {};
 
 // ------------------------------------------------------------------ the panel
@@ -338,8 +339,9 @@ function bindKnob(k) {
   });
 }
 const tall = matchMedia("(orientation: portrait) and (max-width: 700px)");
-build(tall.matches ? "tall" : "wide");
-tall.addEventListener("change", () => build(tall.matches ? "tall" : "wide"));
+const drawing = () => HOST.drawing ? HOST.drawing() : tall.matches ? "tall" : "wide";
+build(drawing());
+tall.addEventListener("change", () => { if (drawing() !== layout) build(drawing()); });
 document.fonts?.load("16px DotGothic16").then(() => build(layout), () => {});   // the labels' width: the hit areas
 
 // the computer keyboard, every key one control: F3..A#4 on the Z (white) and A (black) rows, B4..G5 on Q..O
@@ -535,7 +537,7 @@ async function switchOn() {
   }
 }
 document.getElementById("go").addEventListener("click", switchOn);
-if (HOST.attach) HOST.attach({ switchOn, say });
+if (HOST.attach) HOST.attach({ switchOn, say, draw: (name) => { if (LAYOUTS[name] && name !== layout) build(name); } });
 document.addEventListener("visibilitychange", () => send({ type: "visible", on: !document.hidden }));
 </script>
 </body>

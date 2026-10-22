@@ -36,7 +36,12 @@ static int16_t tutti_bpm_shown;  /* the host's tempo rounded, for the screen (G_
 static uint8_t tutti_clock_int;  /* hosted playback: the internal clock at the host's tempo whatever CLK says; a runtime
                                   * override (song.g[G_CLOCK], the setting the state saves, stays the user's) */
 #define CLOCK_MODE() (tutti_clock_int ? 0 : song.g[G_CLOCK])   /* the clock that runs: 0 internal, else external */
+static uint8_t tutti_host_notes; /* a render of the host's MIDI (use B): its notes last as long as the host says, ARP 2's
+                                  * HOLD latches none; a runtime override as tutti_clock_int (P_AHOLD stays saved) */
+static uint8_t tutti_let_go;     /* events_block lets every host note and the arp's chord go (the range's end) */
+#define ARP_LATCH(t) (!tutti_host_notes && (t)->p[P_AHOLD])   /* ARP 2 HOLD keeps the arp's chord after its keys */
 #else
+#define ARP_LATCH(t) t->p[P_AHOLD]       /* (unbracketed: the code as it always was, token for token) */
 #define HEAD_BPM song.g[G_BPM]
 #define CLOCK_MODE() (song.g[G_CLOCK])
 #endif

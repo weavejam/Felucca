@@ -204,6 +204,8 @@ export async function render(module, sectors, req, sink, opts = {}) {
   if (plan.events) {
     for (const e of plan.events)
       if (!main.tutti_event(e.frame, e.status, e.d1, e.d2)) throw new RenderError("too-large", "too many MIDI events");
+    main.tutti_input_end(plan.stop);                  // use B: the host's note lengths whatever a part latches (ARP
+    // HOLD), every note and the arp's chord let go at toBeat (felucca_plugin.c)
   } else main.tutti_start(plan.stop);                 // use A: the song from frame 0, stopped at toBeat (the tail rings out)
   // (use B: Felucca's sequencer never starts, protocol 7b: only the host's MIDI plays; tutti_event takes no realtime
   // messages, so the MIDI cannot start it either)

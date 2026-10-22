@@ -128,9 +128,20 @@ EXPORT void tutti_boot(uint32_t headless)
 EXPORT void tutti_clock_internal(uint32_t on) { tutti_clock_int = on ? 1u : 0u; }
 
 /* the parts' sums of this block (fx.c mix_block) into the call's capture */
+static int32_t tt_lvl[NPART];                      /* each part's peak since the page's view read it */
 static void tutti_parts(uint32_t n)
 {
     uint32_t p, i;
+    for (p = 0; p < NPART; p++)
+        for (i = 0; i < n; i++) {
+            int32_t l = tutti_mx[p].l[i], r = tutti_mx[p].r[i];
+            l = l < 0 ? -l : l;
+            r = r < 0 ? -r : r;
+            if (l > tt_lvl[p])
+                tt_lvl[p] = l;
+            if (r > tt_lvl[p])
+                tt_lvl[p] = r;
+        }
     if (!tt_capture || tt_blk >= TT_MAXB)
         return;
     for (p = 0; p < NPART; p++) {
@@ -179,6 +190,17 @@ EXPORT void tutti_start(uint32_t stop)
     tt_stop = stop;
 }
 
+/* use B: the host's MIDI plays (tutti_event), and its notes last as long as the host says whatever the parts' latches
+ * (ARP 2 HOLD: core.h tutti_host_notes, a runtime override; the saved setting stays). With the block nearest to frame
+ * `end` (toBeat), after that block's MIDI, every note still held and the arp's chord are let go (seq.c
+ * tutti_release_host): from there only the releases and the FX tails ring, no new note starts */
+static uint32_t tt_end = ~0u;
+EXPORT void tutti_input_end(uint32_t end)
+{
+    tutti_host_notes = 1;
+    tt_end = end;
+}
+
 /* nblocks (<= TT_MAXB) blocks of CTL frames into tutti_out_l / _r; capture: the parts' sums too (tutti_cap). The
  * device's clock (fm1_ms, TIMER4) follows the frames; the audio ISR's block (audio.c audio_block) without the
  * metronome's click (the DAC's only) and the scope */
@@ -198,6 +220,10 @@ EXPORT void tutti_render(uint32_t nblocks, uint32_t capture)
         if (tt_stop != ~0u && f0 + CTL / 2u > tt_stop) {
             transport_req = 2;                        /* (seq.c events_block: seq_stop, before the steps) */
             tt_stop = ~0u;
+        }
+        if (tt_end != ~0u && f0 + CTL / 2u > tt_end) {
+            tutti_let_go = 1;                         /* (events_block, after the block's MIDI) */
+            tt_end = ~0u;
         }
         tt_blk = b;
         mix_block(tt_out, CTL);
@@ -307,9 +333,74 @@ EXPORT uint32_t tutti_seek_run(uint32_t max, uint32_t more)
     return 0;
 }
 
+/* ------------------------------------------------------- the page's view --- */
+/* the plugin page's Parts panel (layout.js, a wide frame): what each part is and plays, read as the device runs (it
+ * changes nothing; the parts' levels are the plugin's own, tutti_parts, so the MIXER page keeps its meters). Layout
+ * (little-endian, layout.js PARTS_VIEW): per part 64 bytes: the engine's name and the sound's (16 each, 0-ended), flags
+ * (1 MUTE, 2 a DRUM part, 4 ARP on, 8 ARP 2 HOLD), the MIDI channel it plays (0..15; 16 OMNI, 17 none, 18 every
+ * channel: MIDI IN SEL and it is selected), LEN, the step playing (255: stopped), the steps with a note or hits, the TIE
+ * steps, the accented ones (bit s: step s, 8 bytes each), the peak since the last read (float, full scale 1); then the
+ * selected part and 1 while the sequencer plays (u32 each) */
+static struct {
+    struct {
+        char eng[16], sound[16];
+        uint8_t flags, ch, len, step;
+        uint8_t notes[8], ties[8], acc[8];
+        float level;
+    } p[NPART];
+    uint32_t sel, playing;
+} tt_view;
+EXPORT void *tutti_view(void)
+{
+    uint32_t i, s;
+    int32_t b = midi_base();
+    for (i = 0; i < NPART; i++) {
+        const track_t *t = &trk[i];
+        uint32_t len = (uint32_t)clamp(t->p[P_SLEN], 1, NSTEP), ch = b == -1 ? (i == song.sel ? 18u : 17u)
+                                                                      : b == -2 ? mch_get(i) : (uint32_t)b + i;
+        str_cpy(tt_view.p[i].eng, ENGINES[eng_idx(t->eng_req)]->name, 16);
+        sound_name(t, tt_view.p[i].sound);
+        tt_view.p[i].flags = (uint8_t)((t->p[P_MUTE] ? 1u : 0u) | (drum_track(t) ? 2u : 0u) | (t->p[P_AMODE] ? 4u : 0u) |
+                                       (t->p[P_AHOLD] ? 8u : 0u));
+        tt_view.p[i].ch = (uint8_t)(ch > 18u ? 17u : ch);
+        tt_view.p[i].len = (uint8_t)len;
+        tt_view.p[i].step = song.playing ? (uint8_t)(t->seq_idx % len) : 255u;
+        memset(tt_view.p[i].notes, 0, 24);
+        for (s = 0; s < len; s++) {
+            const step_t *st = &t->step[s];
+            uint8_t bit = (uint8_t)(1u << (s & 7u));
+            if (st->time == ST_NOTE && (st->n || st->hit))
+                tt_view.p[i].notes[s >> 3] |= bit;
+            else if (st->time == ST_TIE)
+                tt_view.p[i].ties[s >> 3] |= bit;
+            if (st->time == ST_NOTE && ((st->flags & SF_ACCENT) || st->acc))
+                tt_view.p[i].acc[s >> 3] |= bit;
+        }
+        tt_view.p[i].level = (float)tt_lvl[i] * (float)(1 << OUT_SHIFT) / 8388608.0f;
+        tt_lvl[i] = 0;
+    }
+    tt_view.sel = song.sel;
+    tt_view.playing = song.playing ? 1u : 0u;
+    return &tt_view;
+}
+
 /* for the tests (web/plugin/plugin_test.mjs): track t's pattern emptied (the heavy song, web_test_heavy, without it) */
 EXPORT void tutti_test_clear(uint32_t t)
 {
     memset(trk[t % NTRK].step, 0, sizeof trk[0].step);
     ui.force = 1;
+}
+/* for the tests: part t's ARP 2 HOLD as it is (P_AHOLD, what the state saves); mode > 0 first: ARP on in that mode
+ * (seq.c AM_UP = 1 ...), HOLD as `hold` says, and `dry`: no CHORUS, DELAY, REVERB sends (a tail with no echoes) */
+EXPORT uint32_t tutti_test_arp(uint32_t t, int32_t mode, uint32_t hold, uint32_t dry)
+{
+    track_t *k = &trk[t % NTRK];
+    if (mode > 0) {
+        k->p[P_AMODE] = (int16_t)mode;
+        k->p[P_AHOLD] = hold ? 1 : 0;
+        if (dry)
+            k->p[P_CHOR] = k->p[P_DLY] = k->p[P_REV] = 0;
+        ui.force = 1;
+    }
+    return (uint32_t)k->p[P_AHOLD];
 }

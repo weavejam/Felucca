@@ -791,6 +791,53 @@ const collect = (h, renderId) => {                    // the chunks of a render,
         rms(free.subarray(end - 22050, end)) > 1e-3 && tail(held) <= tail(free) * 1.05 + 1e-6);
 }
 
+// ---- use B: a part with ARP and HOLD saved: the host's notes last as long as the host says (a runtime override), so
+// after a note's end (and every note at toBeat) only the releases and the FX tails ring, no new arp note starts
+{
+  const AM_UP = 1;                                     // (seq.c)
+  const arpState = (hold, dry) => makeState((ex) => {
+    for (let k = 0; k < 1000 * 44.1; k += 128) ex.web_render(128);
+    ex.tutti_test_arp(0, AM_UP, hold, dry);
+    for (let k = 0; k < 100 * 44.1; k += 128) ex.web_render(128);
+  });
+  const latched = await arpState(1, 0), unlatched = await arpState(0, 0), dry = await arpState(1, 1);
+  const chord = (beat, len) => [60, 64, 67].map((pitch) => ({ beat, lengthBeats: len, pitch, velocity: 100, channel: 0 }));
+  const one = async (state, notes) => (await renderAll(state, req({ input: { notes, cc: [], pitchBend: [], preRollBeats: 0 },
+                                                                     toBeat: 4, tailMs: 4000, outputs: ["t1"] }))).out.t1;
+  const at = (beat) => Math.round(beat * 0.5 * 44100);
+  // a note starts where a 10 ms window is louder than the one before by over 6 dB (a release only falls)
+  const onsets = ([l, r], from) => {
+    const w = 441, e = [], out = [];
+    for (let i = from; i + w <= l.length; i += w) e.push(Math.max(rms(l.subarray(i, i + w)), rms(r.subarray(i, i + w))));
+    for (let i = 1; i < e.length; i++) if (e[i] > 1e-4 && e[i] > 2 * e[i - 1]) out.push(from + i * w);
+    return out;
+  };
+  const settle = 44100 / 2;                            // (the release)
+  for (const [what, notes, end] of [["a chord ending before toBeat", chord(0.5, 1), 1.5], ["a chord held past toBeat", chord(0.5, 10), 4]]) {
+    const h = await one(latched, notes), u = await one(unlatched, notes), d = await one(dry, notes);
+    const pre = onsets(d, 0).filter((f) => f < at(Math.min(end, 1.5))).length, post = onsets(d, at(end) + settle);
+    check(`ARP HOLD saved, use B, ${what}: the arp plays while it is held (${pre} notes by beat 1.5)`, pre >= 3);
+    check(`ARP HOLD, ${what}: as the same part without HOLD, sample for sample (the FX tails too)`, same(h[0], u[0]) && same(h[1], u[1]));
+    check(`ARP HOLD, ${what} (dry): no note starts ${end === 4 ? "after toBeat" : "after its end"} + 0.5 s (${post.length}), the tail dies (${db(rms(d[0].subarray(at(end) + 3 * 44100)) + 1e-12)} dB)`,
+          post.length === 0 && rms(d[0].subarray(at(end) + 3 * 44100)) < 1e-4);
+  }
+  // the override is the render's only: the state still says HOLD, and the device itself (MIDI in, live) still latches
+  const { exports: ex } = await WebAssembly.instantiate(mod, {});
+  ex._initialize(); ex.web_nor_erase();
+  const nor = new Uint8Array(ex.memory.buffer, ex.web_nor(), ex.web_nor_size());
+  for (const [o, v] of Object.entries(dry)) nor.set(v, +o);
+  ex.tutti_boot(0);
+  for (let k = 0; k < 1000 * 44.1; k += 128) ex.web_render(128);
+  const hold = ex.tutti_test_arp(0, 0, 0, 0);
+  ex.web_midi(0x90, 60, 100);
+  for (let k = 0; k < 300 * 44.1; k += 128) ex.web_render(128);
+  ex.web_midi(0x80, 60, 0);
+  const L = new Float32Array(3 * 44100);
+  for (let k = 0; k + 128 <= L.length; k += 128) { ex.web_render(128); L.set(new Float32Array(ex.memory.buffer, ex.web_out_l(), 128), k); }
+  const still = onsets([L, L], 44100).length;
+  check(`ARP HOLD stays saved (${hold}); off a render it latches as on the FM-1 (${still} notes 1 .. 3 s after the key)`, hold === 1 && still > 0);
+}
+
 // ---- hosted playback: the internal clock whatever CLK says (a runtime override), the saved CLK the user's
 {
   const G_CLOCK = 2;                                   // (core.h)

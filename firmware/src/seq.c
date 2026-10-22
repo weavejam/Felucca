@@ -174,7 +174,7 @@ static uint32_t kb_map(const track_t *t, uint32_t k)
 static void arp_add(track_t *t, uint32_t note)
 {
     uint32_t i, k = in_key - 1u;
-    if (t->p[P_AHOLD] && t->arp_phys == 0u)
+    if (ARP_LATCH(t) && t->arp_phys == 0u)
         t->nheld = 0;                               /* new chord replaces the latched one */
     t->arp_phys++;                                  /* every key-down: arp_remove counts every key-up */
     for (i = 0; i < t->nheld; i++)
@@ -203,7 +203,7 @@ static void arp_remove(track_t *t, uint32_t note)
     int8_t *dt = held_dt[trk_index(t)];
     if (t->arp_phys)
         t->arp_phys--;
-    if (t->p[P_AHOLD])
+    if (ARP_LATCH(t))
         return;
     for (i = 0; i < t->nheld; i++)
         if (t->held[i] != note) {
@@ -1231,6 +1231,28 @@ static track_t *midi_track(uint32_t ch)
 #include "midi_control.c"
 #include "midi_clock.c"
 
+#if FELUCCA_TUTTI
+/* the end of a render's range (web/plugin felucca_plugin.c tutti_input_end): every MIDI note let go (a channel's pedal
+ * first), the arp's chord with them, whatever HOLD says; voices go into their releases, the FX tails ring on */
+static __attribute__((noinline)) void tutti_release_host(void)
+{
+    uint32_t ch, note, i;
+    tutti_let_go = 0;
+    for (ch = 0; ch < 16u; ch++) {
+        if (midi_ch[ch].pedal)
+            midi_pedal_up(ch);
+        for (note = 0; note < 128u; note++)
+            if (midi_notes[ch][note] & 0x7Fu)
+                midi_release(ch, note);
+    }
+    for (i = 0; i < NPART; i++) {
+        trk[i].nheld = trk[i].arp_phys = 0;
+        if (trk[i].arp_note)
+            arp_silence(&trk[i]);
+    }
+}
+#endif
+
 /* the count-in: its first beat now (accented) */
 static __attribute__((noinline)) void cin_begin(void)
 {
@@ -1396,6 +1418,10 @@ static void events_block(uint32_t n)
         } else
             midi_event(st, ch, d1, d2);
     }
+#if FELUCCA_TUTTI
+    if (tutti_let_go)
+        tutti_release_host();                         /* (after the block's MIDI: the range's last offs went in) */
+#endif
     if (clock_mode) {
         seq_n = 0;
         if (song.playing) {
