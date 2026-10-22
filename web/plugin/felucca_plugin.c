@@ -116,11 +116,16 @@ EXPORT void tutti_boot(uint32_t headless)
     if (headless) {
         kb_boot_hold = 0;
         song.master_q12 = MASTER_FULL;
-        song.g[G_CLOCK] = 0;                          /* the host's clock: the internal one at its tempo */
+        tutti_clock_int = 1;                          /* the host's clock: the internal one at its tempo */
         song.rec = 0;                                 /* (no live recording, no count-in) */
         tt_ms0 = fm1_ms;
     }
 }
+
+/* 1: the internal clock at the host's tempo for any playback hosted (a render; the live page in tuttidaw's frame, from
+ * worklet-tutti.js tutti-hosted), whatever CLK says: no clock pulses come from a host. A runtime override (core.h
+ * CLOCK_MODE): song.g[G_CLOCK], what the state saves and the page shows, stays the user's choice */
+EXPORT void tutti_clock_internal(uint32_t on) { tutti_clock_int = on ? 1u : 0u; }
 
 /* the parts' sums of this block (fx.c mix_block) into the call's capture */
 static void tutti_parts(uint32_t n)

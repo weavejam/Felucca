@@ -5,7 +5,7 @@
 //   in:  {type: render, wasmUrl, sectors, req}, {type: ack} (the last chunk went on: the next one may come),
 //        {type: cancel}
 //   out: {type: chunk, output, frameOffset, channels} (transferred), {type: progress, fraction}, {type: done, result},
-//        {type: error, code, message}
+//        {type: error, code, message}, {type: messageerror} (a message of the page's it could not read)
 import { render, RenderError } from "./renderer.js";
 
 let module = null, cancel = false, wake = null, lastProgress = 0;
@@ -18,6 +18,13 @@ async function compile(url) {
   }
   return module;
 }
+
+// a message from the page that cannot be read: the render stops, the page ends the session (tutti.js stopWorker)
+self.onmessageerror = () => {
+  cancel = true;
+  if (wake) wake();
+  self.postMessage({ type: "messageerror" });
+};
 
 self.onmessage = async (e) => {
   const m = e.data;

@@ -20,6 +20,9 @@ export const PROTOCOL = "tutti-plugin/0";
 export const CODES = ["bad-request", "unsupported", "busy", "state-incompatible", "cancelled", "too-large", "timeout",
                       "session-ended", "internal"];
 export const INITIAL_CREDITS = 8;
+// the credits a render may hold (protocol 6: no more chunks in flight than granted): the chunks of the largest render of
+// the host's budget, 600 s in 1 s chunks of 8 outputs; grants past it are clamped (a credit beyond is never used)
+export const MAX_CREDITS = 600 * 8;
 export const STATE_DEBOUNCE_MS = 600, STATE_MAX_WAIT_MS = 2000, PROGRESS_MS = 100;
 
 // The pages that may embed it (protocol 3), per deployment channel: chosen when the site is built (site.mjs
@@ -59,7 +62,8 @@ export class PluginSession {
   hello() { this.postParent({ type: "tutti-plugin:hello", protocol: PROTOCOL }); }
   stopAccepting() { this.accepting = false; }
 
-  // a window message: { data, origin, isParent (event.source === window.parent), ports }. 1 = it was taken
+  // a window message: { data, origin, isParent (event.source === window.parent), ports }. 1 = it was taken. The session
+  // ends on close, the page going (pagehide) or a port error (messageerror; protocol 3): close()
   onWindowMessage({ data, origin, isParent, ports }) {
     if (!data || data.type !== "tutti-plugin:connect") return 0;
     if (!isParent || !this.allow(origin)) { this.log("tutti: connect refused from", origin); return 0; }
@@ -80,6 +84,7 @@ export class PluginSession {
     this.inited = false;
     this.initing = false;
     this.port.onmessage = (e) => this.onPort(e.data);
+    this.port.onmessageerror = () => { this.log("tutti: a message the port could not read: the session ends"); this.close(); };
     if (this.port.start) this.port.start();
     return 1;
   }
@@ -121,7 +126,7 @@ export class PluginSession {
         case "render-credit": {
           const r = this.render;
           if (r && r.renderId === m.renderId && Number.isInteger(m.chunks) && m.chunks > 0 && m.chunks <= 1e6) {
-            r.credits += m.chunks;
+            r.credits = Math.min(MAX_CREDITS, r.credits + m.chunks);
             r.wake();
           } else this.log("tutti: dropped render-credit");
           return;
@@ -263,7 +268,7 @@ export class PluginSession {
     this.render = null;
     this.inited = this.initing = false;
     try { this.engine.close(); } catch {}
-    if (this.port) { this.port.onmessage = null; try { this.port.close(); } catch {} }
+    if (this.port) { this.port.onmessage = this.port.onmessageerror = null; try { this.port.close(); } catch {} }
     this.port = null;                                  // (a new connect may start another session)
   }
 }

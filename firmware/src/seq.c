@@ -860,7 +860,7 @@ static void seq_stop(void)
     cin_left = 0;                                  /* (a count-in: cancelled, nothing recorded) */
     cin_flush = 0;
     memset(cin_n, 0, sizeof cin_n);
-    if (song.g[G_CLOCK])                           /* external clock: the arp stops with the transport, */
+    if (CLOCK_MODE())                              /* external clock: the arp stops with the transport, */
         for (i = 0; i < NPART; i++)                /* its sounding note too (HOLD keeps the latched chord) */
             if (trk[i].arp_note)
                 arp_off(&trk[i]);
@@ -1307,7 +1307,7 @@ static int32_t click_beat_now(void)
 static void events_block(uint32_t n)
 {
     uint32_t i, pr, seq_n = n;
-    uint32_t clock_mode = (uint32_t)song.g[G_CLOCK];
+    uint32_t clock_mode = (uint32_t)CLOCK_MODE();
     if (midi_clock.mode != clock_mode) {
         seq_stop();
         memset(&midi_clock, 0, sizeof midi_clock);

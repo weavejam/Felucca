@@ -105,6 +105,11 @@ Only builds that define `FELUCCA_TUTTI=1` (this plugin's) change; the hardware b
   `fromBeat` is outside it gets `unsupported`; nothing is rendered at a different tempo.
 - **No seek.** `capabilities.seek` is `false`: every render runs from beat 0, and `render-progress` goes over the
   pre-roll from beat 0 and the range together.
+- **Limits.** Besides the host's 600 s of result (`too-large`), the pre-roll from beat 0 to `fromBeat` (at the render's
+  tempo) is at most 610 s, the result's budget plus the longest tail (`too-large`): a render's whole run stays within
+  1210 s of audio. A range the device cannot count (its frames from beat 0 are 32-bit: `toBeat` plus the longest tail
+  past 2^32 frames) is a `bad-request`. A render holds at most 4800 credits (600 s in 1 s chunks of 8 outputs, the
+  host's largest render): grants past that are clamped.
 - **Use A / use B.** `input: null`: Felucca's own sequencer plays (use A), from beat 0, and stops at `toBeat` (the
   nearest block): its notes are released there and the tail only rings out. With `input` (use B) Felucca's sequencer
   never runs (protocol 7b: only the host's MIDI plays, the state gives the sounds and settings; realtime messages are
@@ -113,6 +118,11 @@ Only builds that define `FELUCCA_TUTTI=1` (this plugin's) change; the hardware b
   play T1..T4: the manifest's `midiChannels`). Notes are released at `min(end, toBeat)`; a note's off comes at least
   a block (32 frames) after its on, so a note of length 0 (or less) still sounds and is let go, never off before on;
   moved that way, it still comes before the next note of the same pitch on the same channel, never cutting it.
+  A channel that used the sustain pedal (CC64) gets a pedal-up at `toBeat`, before the notes' offs there (a later
+  pedal-up is past the range and dropped): nothing is held into the tail, the releases and the FX tails ring out.
+- **Clock.** Hosted playback (a render, the live preview in tuttidaw's frame) runs Felucca's internal clock at the
+  host's tempo whatever its CLK setting says (`tutti_clock_internal`, a runtime override: no clock pulses come from
+  a host). The setting itself stays the user's: shown, saved in the state, `get-state` returns it.
 
 ## Sample rates
 
@@ -133,7 +143,9 @@ emulator.
 
 Revisions: 1 is the state `init` gave (or the factory state). An edit on the live Felucca (its music, a saved preset or
 project, a setting) starts the next revision, `state-changed` follows once it has been still for 600 ms (at most every
-2 s while it keeps changing). Renders take the state of the revision they ask for (the last 8 are kept).
+2 s while it keeps changing). Renders take the state of the revision they ask for (the last 8 are kept). A revision's
+state is made once: a `get-state` or a render asking for it while it is being made waits for that same snapshot, so a
+revision never has two different states.
 
 ## The page
 
@@ -154,6 +166,9 @@ project, a setting) starts the next revision, `state-changed` follows once it ha
   of an ended session leaves the next one uninitialised. A render still running in the Worker when the next session
   renders is stopped with its Worker; one whose session ended while its state was being made never starts (it never
   touches the next session's Worker), and that late state is never kept as one of the next session's revisions.
+  A session ends on `close`, the page going, or a message that cannot be read (`messageerror` on the port, or between
+  the page and its render Worker; protocol 3): its render is cancelled and its Worker stopped, the port let go, and a
+  new `connect` starts the next session.
 - Opened by itself (or not connected within 4 s): the browser emulator, its saves in this browser, with a note; a
   `connect` after that is refused (reload the frame to connect).
 - `/credits.html`: who made what, the licences, the source of the build. The page's footer links it (tuttidaw's

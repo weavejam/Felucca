@@ -362,7 +362,7 @@ static void edit_load(uint32_t e, int32_t step)
 static void glo_tap(void)
 {
     uint32_t n = lys.ntap, i;
-    if (song.g[G_CLOCK]) {
+    if (CLOCK_MODE()) {
         ui_message("TAP: CLK IS EXT");
         return;
     }
@@ -742,7 +742,7 @@ static int layer_play(void)
 {
     if (layer_open() != LAYER_GLO || !(fm1_in.buttons & ly_bit(LAYER_GLO)) || chain_busy())
         return 0;
-    if (song.g[G_CLOCK] && song.playing) {
+    if (CLOCK_MODE() && song.playing) {
         ui_message("RESTART: CLK IS EXT");
         return 1;
     }
@@ -848,7 +848,7 @@ static uint32_t layer_leds(uint32_t *br)
         } else if (l == LAYER_GLO) {                    /* sounding lit; SOLO held lit, the others, C4, F4 breathe */
             on = b ? p < NTRK && glo_sounding(p) : (p < NTRK && ((lys.solo >> k) & 1u)) || (p == 5u && ui.ml.on) ||
                  (p == 6u && seq_fill);
-            can = !b && (p < NTRK || p == 4u || p == 5u || p == 6u || (p == 7u && !song.g[G_CLOCK]));
+            can = !b && (p < NTRK || p == 4u || p == 5u || p == 6u || (p == 7u && !CLOCK_MODE()));
         } else if (l == LAYER_SCL) {                    /* the root lit, the scale's notes breathe */
             e = (k + 5u + 12u - root) % 12u;
             on = e == 0u;
@@ -1012,7 +1012,7 @@ static void layer_glo(void)
     n[0] = 'E';
     lcell(LC_X(2), 50, LC_H, n, ICON_STEPS, 0, "FILL", seq_fill ? LS_HELD : LS_OFF, 1);   /* (FILL while held, 1.5.5) */
     n[0] = 'F';
-    lcell(LC_X(3), 50, LC_H, n, ICON_TEMPO, 0, "TAP", song.g[G_CLOCK] ? LS_DIM : LS_OFF, 0);
+    lcell(LC_X(3), 50, LC_H, n, ICON_TEMPO, 0, "TAP", CLOCK_MODE() ? LS_DIM : LS_OFF, 0);
     for (e = 0; e < NTRK; e++) {                        /* the black keys 1..4: MUTE, latched */
         bnote(n, e);
         lcell(LC_X(e), LM_Y, LM_H, n, ICON_MUTE, trk_icon(e, 0), 0, trk[e].p[P_MUTE] ? LS_MUTE : LS_OFF, 0);

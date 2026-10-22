@@ -10,7 +10,8 @@
 //     close()
 //   } and it calls engine.changed() when its music or flash changed (the page's check, tutti.js)
 // A revision is a state the host may ask a render of: 1 the one init gave (or the factory state), +1 when the live
-// device changed since the last revision; its bytes are made when the host asks for them (get-state) or renders it.
+// device changed since the last revision; its bytes are made when the host asks for them (get-state) or renders it,
+// once: what asks for that revision meanwhile waits for the same snapshot (a revision is one state, published once).
 import { packState, unpackState, STATE_VERSION, StateError } from "./state.js";
 import { RenderError, checkTimeMap, tempoAt, MIN_BPM, MAX_BPM } from "./renderer.js";
 
@@ -26,6 +27,7 @@ export class FeluccaEngine {
     this.states = new Map();                           // revision -> { buf, sectors }
     this.dirty = false;                                // the live device changed since `revision` was made
     this.epoch = 0;                                    // +1 per init: what an earlier session's await gives is dropped
+    this.making = new Map();                           // revision -> its snapshot on the way (this session's)
   }
 
   async init({ context, state, stateVersion, mode }) {
@@ -36,6 +38,7 @@ export class FeluccaEngine {
     this.revision = 1;
     this.dirty = false;
     this.states.clear();
+    this.making.clear();                               // (an earlier session's snapshot: dropped when it comes)
     this.keep(1, { rev: 1, buf: state ? state.slice(0) : packState(sectors), sectors });   // (the input is never changed)
     if (mode === "edit" && this.live) await this.live.load(sectors, context);
     return { stateRevision: this.revision };
@@ -57,18 +60,28 @@ export class FeluccaEngine {
   }
 
   // the state of the current revision ({ rev, buf, sectors }), made now if it is not yet: kept as the revision current
-  // when it was asked for; if its session ended meanwhile (another init), dropped, never kept
-  async current() {
+  // when it was asked for; if its session ended meanwhile (another init), dropped, never kept. One snapshot per
+  // revision: asked for again while it is made, the same one (a revision's bytes are made once, never two states)
+  current() {
     const have = this.states.get(this.revision);
-    if (have && !this.dirty) return have;
-    if (!this.live || this.mode !== "edit") return have;
+    if (have && !this.dirty) return Promise.resolve(have);
+    if (!this.live || this.mode !== "edit") return Promise.resolve(have);
+    if (!this.dirty && this.making.has(this.revision)) return this.making.get(this.revision);
     this.dirty = false;                                // (a change from here on: the next revision)
     const epoch = this.epoch, rev = this.revision;
-    const sectors = await this.live.snapshot();
-    if (epoch !== this.epoch) throw new RenderError("session-ended", "the session ended");
-    const s = { rev, buf: packState(sectors), sectors };
-    this.keep(rev, s);
-    return s;
+    const p = (async () => {
+      try {
+        const sectors = await this.live.snapshot();
+        if (epoch !== this.epoch) throw new RenderError("session-ended", "the session ended");
+        const s = { rev, buf: packState(sectors), sectors };
+        this.keep(rev, s);
+        return s;
+      } finally {
+        if (this.making.get(rev) === p) this.making.delete(rev);
+      }
+    })();
+    this.making.set(rev, p);
+    return p;
   }
 
   async getState() {
@@ -87,6 +100,7 @@ export class FeluccaEngine {
   async render(req, sink) {
     let s = this.states.get(req.stateRevision);
     if (req.stateRevision === this.revision) s = await this.current();
+    else if (!s && this.making.has(req.stateRevision)) s = await this.making.get(req.stateRevision);   // (changed since)
     if (sink.cancelled()) throw new RenderError("cancelled", "cancelled");   // (its session ended while the state was made)
     if (!s) throw new RenderError("state-incompatible", `state revision ${req.stateRevision} is not known (now ${this.revision})`);
     return this.renderFn(s.sectors, req, sink);
