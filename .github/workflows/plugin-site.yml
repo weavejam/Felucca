@@ -63,6 +63,7 @@ jobs:
           git status --porcelain
           PLUGIN_CHANNEL="production preview" sh web/plugin/build.sh
           node web/plugin/plugin_test.mjs build/plugin-wasm/felucca.wasm build/emu/felucca.wasm
+          node web/plugin/fm1_panel_test.mjs
 
       - name: Keep the production site
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

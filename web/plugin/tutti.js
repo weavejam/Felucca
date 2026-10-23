@@ -10,6 +10,7 @@
 // Either way the page fits the frame it is in, any size, never scrolled (layout.js): wide, the FM-1 upright beside the
 // Parts panel; otherwise the FM-1 alone, scaled to fit.
 import { PluginSession, embedderAllowed } from "./protocol.js";
+import { PanelBridge } from "./fm1-panel.js";
 import { FeluccaEngine, PreviewTempo, recText } from "./engine.js";
 import { RenderError } from "./renderer.js";
 import { BUILD, EMBEDDERS } from "./build-info.js";
@@ -148,7 +149,9 @@ const live = {
       send({ type: "tutti-hosted" });                 // (the internal clock while hosted, whatever CLK is set to)
       tempo.reset();
       tempo.at(0);
+      panel.node(n);                                   // (a hardware FM-1 through tuttidaw: fm1-panel.js)
       watch(n, (m) => {
+        panel.frame(m);                                // (the screen and LEDs, read only: they go on as they went)
         if (m.type === "tutti-sig") {
           if (sigBase !== null && m.sig !== sigBase) engine.changed();
           sigBase = m.sig;
@@ -265,8 +268,11 @@ const engine = new FeluccaEngine({
   live,
   onChanged: (rev) => session.stateChanged(rev),
 });
+// a hardware FM-1 the host hands this panel while its window has the focus (protocol 12)
+const panel = new PanelBridge((m, transfer) => session.send(m, transfer));
 const session = new PluginSession({
   engine,
+  panel,
   post: (m) => window.parent.postMessage(m, "*"),
   allow: (origin) => embedderAllowed(origin, EMBEDDERS),   // (the build's channel: site.mjs PLUGIN_CHANNEL)
   plugin: { id: BUILD.id, version: BUILD.version, build: BUILD.build },
