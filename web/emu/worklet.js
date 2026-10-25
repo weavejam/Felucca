@@ -65,6 +65,11 @@ if (typeof registerProcessor === "function") {
       this.frames = 0;
       this.queue = [];                                // button / key changes, each held >= HOLD_MS of device time
       this.nextOk = 0;
+      // the page's presses (queued, as above) and a hardware FM-1's (`direct`: tuttidaw's plugin, fm1-panel.js) are
+      // kept apart; the device gets both OR-ed. The hardware's go in as they come: its contacts are debounced and held
+      // for real, and the firmware latches every edge - queued behind HOLD_MS each, fast playing fell behind.
+      this.page = { buttons: 0, keys: 0 };
+      this.hw = { buttons: 0, keys: 0 };
       this.port.onmessage = (e) => this.onMessage(e.data);
     }
 
@@ -78,6 +83,9 @@ if (typeof registerProcessor === "function") {
           restoreSectors(new Uint8Array(ex.memory.buffer, ex.web_nor(), ex.web_nor_size()), m.sectors);
           ex.web_master(m.master ?? 700);
           ex.web_boot();
+          this.queue = [];
+          this.page = { buttons: 0, keys: 0 };
+          this.hw = { buttons: 0, keys: 0 };
           this.ex = ex;
           this.sentWrites = ex.web_flash_writes_count();
           this.port.postMessage({ type: "ready", rate: ex.web_sample_rate() });
@@ -88,8 +96,12 @@ if (typeof registerProcessor === "function") {
       }
       const ex = this.ex;
       if (!ex) return;
-      if (m.type === "buttons" || m.type === "keys") this.queue.push(m);
-      else if (m.type === "enc") ex.web_enc(m.role, m.n | 0);
+      if (m.type === "buttons" || m.type === "keys") {
+        if (m.direct) {
+          this.hw[m.type] = m.mask >>> 0;
+          this.apply(m.type);
+        } else this.queue.push(m);
+      } else if (m.type === "enc") ex.web_enc(m.role, m.n | 0);
       else if (m.type === "master") ex.web_master(m.value | 0);
       else if (m.type === "midi") ex.web_midi(m.data[0] | 0, m.data[1] | 0, m.data[2] | 0);
       else if (m.type === "visible") this.period = m.on ? 1 / 30 : 1 / 4;
@@ -134,10 +146,17 @@ if (typeof registerProcessor === "function") {
       const ex = this.ex, now = ex.web_now_ms();
       while (this.queue.length && now - this.nextOk >= 0) {
         const m = this.queue.shift();
-        if (m.type === "buttons") ex.web_buttons(m.mask >>> 0);
-        else ex.web_keys(m.mask >>> 0);
+        this.page[m.type] = m.mask >>> 0;
+        this.apply(m.type);
         this.nextOk = now + HOLD_MS;
       }
+    }
+
+    // the page's and the hardware's presses of one kind into the device
+    apply(type) {
+      const mask = (this.page[type] | this.hw[type]) >>> 0;
+      if (type === "buttons") this.ex.web_buttons(mask);
+      else this.ex.web_keys(mask);
     }
 
     process(inputs, outputs) {
